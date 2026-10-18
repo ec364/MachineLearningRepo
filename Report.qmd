@@ -4,23 +4,72 @@ format: pdf
 editor: visual
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+## Load Data
 
 ```{r}
-1 + 1
-```
+library(tidyverse)
+library(PDQutils)
 
-You can add options to executable code like this
+train <- read_csv("data-train.csv")
+
+#eda
+
+train |>
+  ggplot(aes(St)) +
+  geom_histogram()
+
+train |>
+  ggplot(aes(Re)) +
+  geom_histogram()
+
+train |>
+  ggplot(aes(Fr)) +
+  geom_histogram()
+
+train |>
+  ggplot(aes(R_moment_1)) +
+  geom_histogram()
+
+train |>
+  ggplot(aes(C_moment_2)) +
+  geom_histogram()
+
+train |>
+  ggplot(aes(R_moment_3)) +
+  geom_histogram()
+
+names(train)
+
+
+
+```
 
 ```{r}
-#| echo: false
-2 * 2
-```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+#making new variables for our summary stats
+
+#mean = R_moment_1, C_moment_2 is variance, everything else is as commented
+train <- train %>%
+  mutate(
+    m1 = R_moment_1, m2 = R_moment_2, m3 = R_moment_3, m4 = R_moment_4,
+
+    # central moments
+    C_moment_2 = m2 - m1^2,                               # variance
+    C_moment_3 = m3 - 3*m1*m2 + 2*m1^3,
+    C_moment_4 = m4 - 4*m1*m3 + 6*m1^2*m2 - 3*m1^4,
+
+    # standardized versions
+    sd_R     = sqrt(C_moment_2),
+    skewness = C_moment_3 / sd_R^3,
+    kurtosis = C_moment_4 / sd_R^4,                       # raw kurtosis
+    ex_kurt  = kurtosis - 3                               # excess kurtosis
+  )
+
+
+
+#using a categorical to address infinity
+train <- train %>%
+  mutate(
+    Fr = as.factor(Fr),
+    Re = as.factor(Re))
+```
