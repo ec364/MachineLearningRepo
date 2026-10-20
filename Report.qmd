@@ -8,7 +8,6 @@ editor: visual
 
 ```{r}
 library(tidyverse)
-library(PDQutils)
 
 train <- read_csv("data-train.csv")
 
@@ -66,10 +65,13 @@ train <- train %>%
   )
 
 
-
 #using a categorical to address infinity
 train <- train %>%
   mutate(
     Fr = as.factor(Fr),
     Re = as.factor(Re))
+
+model <- lm(R_moment_1 ~ log(St) + Re + Fr, data = train)
+
+summary(model)
 ```
