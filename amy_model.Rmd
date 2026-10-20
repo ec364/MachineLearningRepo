@@ -67,9 +67,6 @@ train %>%
   )
 ```
 
-
-
-
 ```{r}
 # Set up leave-one-out cross-validation
 set.seed(325)
