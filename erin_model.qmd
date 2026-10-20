@@ -11,6 +11,7 @@ library(caret)
 
 #load data
 train <- read_csv("data-train.csv")
+data_test <- read_csv("data-test.csv")
 
 #transform data
 #making new variables for our summary stats
@@ -34,13 +35,16 @@ train <- train %>%
 
 log_train <- train |>
   mutate(log_mean = log(R_moment_1),
-         log_variance = log(C_moment_2))
+         log_variance = log(C_moment_2), 
+         log_skewness = log(skewness),
+         log_kurtosis = log(kurtosis),
+         inverse_Fr = 1/Fr)
+
+
 ```
 
 ```{r}
 #eda on our summary stats
-
-#all of them are skewed right, will apply a log transformation 
 
 train |>
   ggplot(aes(R_moment_1)) +
@@ -57,4 +61,61 @@ train |>
 train |>
   ggplot(aes(kurtosis)) +
   geom_histogram()
+
+#all of them are skewed right, will apply a log transformation 
+```
+
+```{r}
+#building the k nearest neighbor model
+set.seed(2026)
+
+#fitting mean, testing with loocv 
+knn_fit <- caret::train(
+  R_moment_1 ~ St + Re + inverse_Fr, data = log_train, method = "knn",
+  preProcess = c("center", "scale"), #scales and centers
+  trControl  = trainControl(method = "cv", number = 5),
+  tuneGrid   = data.frame(k = seq(1, 25, 2))      # CV picks k
+)
+knn_fit          # CV RMSE for each k
+
+knn_loocv <- caret::train(
+  R_moment_1 ~ St + Re + inverse_Fr, data = log_train, method = "knn",
+  preProcess = c("center", "scale"), #scales and centers
+  trControl  = trainControl(method = "LOOCV"),
+  tuneGrid   = data.frame(k = seq(1, 25, 2))      # CV picks k
+)
+
+plot(knn_fit)
+plot(knn_loocv)
+
+```
+
+```{r}
+#fit variance
+
+knn_variance_loocv <- caret::train(
+  C_moment_2 ~ St + Re + inverse_Fr, data = log_train, method = "knn",
+  preProcess = c("center", "scale"), #scales and centers
+  trControl  = trainControl(method = "LOOCV"),
+  tuneGrid   = data.frame(k = seq(1, 25, 2))      # CV picks k
+)
+```
+
+```{r}
+
+knn_skewness_loocv <- caret::train(
+  skewness ~ St + Re + inverse_Fr, data = log_train, method = "knn",
+  preProcess = c("center", "scale"), #scales and centers
+  trControl  = trainControl(method = "LOOCV"),
+  tuneGrid   = data.frame(k = seq(1, 25, 2))      # CV picks k
+)
+```
+
+```{r}
+knn_kurtosis_loocv <- caret::train(
+  kurtosis ~ St + Re + inverse_Fr, data = log_train, method = "knn",
+  preProcess = c("center", "scale"), #scales and centers
+  trControl  = trainControl(method = "LOOCV"),
+  tuneGrid   = data.frame(k = seq(1, 25, 2))      # CV picks k
+)
 ```
