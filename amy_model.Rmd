@@ -1,0 +1,161 @@
+---
+title: "amy_model"
+output: pdf_document
+date: "2026-10-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(caret)
+library(glmnet)
+
+train <- read_csv("data-train.csv")
+
+# Calculate the four target statistics
+train <- train %>%
+  mutate(
+    m1 = R_moment_1,
+    m2 = R_moment_2,
+    m3 = R_moment_3,
+    m4 = R_moment_4,
+
+    C_moment_2 = m2 - m1^2,
+    C_moment_3 = m3 - 3*m1*m2 + 2*m1^3,
+    C_moment_4 = m4 - 4*m1*m3 + 6*m1^2*m2 - 3*m1^4,
+
+    sd_R = sqrt(C_moment_2),
+    skewness = C_moment_3 / sd_R^3,
+    kurtosis = C_moment_4 / sd_R^4,
+    ex_kurt = kurtosis - 3,
+
+    Re = factor(Re),
+    Fr = factor(Fr)
+  )
+
+# Only use the three input parameters as predictors
+X <- train %>%
+  select(Re, Fr, St)
+
+# The four required outcomes
+Y <- train %>%
+  select(R_moment_1, sd_R, skewness, kurtosis)
+
+# Check for invalid values before modeling
+summary(Y)
+sapply(Y, function(x) sum(!is.finite(x)))
+
+```
+```{r}
+train %>%
+  pivot_longer(
+    cols = c(R_moment_1, sd_R, skewness, kurtosis),
+    names_to = "response",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 20, color = "white") +
+  facet_wrap(~ response, scales = "free", ncol = 2) +
+  theme_minimal() +
+  labs(
+    title = "Distributions of Response Variables",
+    x = "Value",
+    y = "Frequency"
+  )
+```
+
+
+
+
+```{r}
+# Set up leave-one-out cross-validation
+set.seed(325)
+
+ctrl <- trainControl(
+  method = "LOOCV"
+)
+
+# Candidate penalty values
+# alpha = 0: ridge
+# alpha = 1: lasso
+# lambda chooses how strongly model penalizes large coefs (this isn't a model param, penalty param). we test out 50 diff penalty values from 10^-4 to 10^2
+tune_grid <- expand.grid(
+  alpha = c(0, 1),
+  lambda = 10^seq(-4, 2, length.out = 50)
+)
+
+# Functiont o fit a ridge/lasso model for one response
+fit_regularized <- function(response_name) {
+
+  # Combine predictors with the outcome being predicted
+  # X: Re, Fr, St
+  # Y: 4 outcomes
+  # Y[[response_name]] gets outcome requested by function
+  dat <- bind_cols(
+    X,
+    y = Y[[response_name]]
+  )
+
+  # Fit models and select the best settings using LOOCV
+  model <- train(
+    y ~ .,
+    data = dat,
+    method = "glmnet",
+    trControl = ctrl,
+    tuneGrid = tune_grid, # test 100 combos of alpha and lambda
+    metric = "RMSE",
+    preProcess = c("center", "scale") # center (subtract mean) and scale (divide by std)
+  )
+
+  return(model)
+}
+
+# Fit models for all four outcomes
+set.seed(325)
+
+# call function for each outcome
+models <- lapply(
+  names(Y),
+  fit_regularized
+)
+
+names(models) <- names(Y)
+
+# Extract the selected alpha and lambda for each outcome
+best_params <- map_dfr(names(models), function(nm) {
+  models[[nm]]$bestTune %>%
+    mutate(response = nm)
+})
+
+# View selected settings
+best_params
+
+# View LOOCV RMSE for every candidate setting
+cv_results <- map_dfr(names(models), function(nm) {
+  models[[nm]]$results %>%
+    mutate(response = nm)
+})
+
+cv_results
+```
+```{r}
+cv_results %>%
+  group_by(response, alpha) %>%
+  slice_min(RMSE, n = 1, with_ties = FALSE) %>%
+  select(response, alpha, lambda, RMSE)
+```
+
+```{r}
+cv_results %>%
+  group_by(response, alpha) %>%
+  slice_min(RMSE, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(response, alpha, lambda, RMSE, MAE) %>%
+  arrange(response, alpha)
+```
+
+
+
