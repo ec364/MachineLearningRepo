@@ -36,7 +36,7 @@ train <- train |>
   )
 ```
 
-## Fit a spline model for mean
+## Mean spline model
 
 ```{r}
 model_mean <- gam(
@@ -46,10 +46,107 @@ model_mean <- gam(
 )
 ```
 
-## Inspect the fit
 
 ```{r}
 summary(model_mean)
 plot(model_mean, shade = TRUE)
 gam.check(model_mean)
+```
+
+## Standard deviation spline model
+
+```{r}
+model_sd <- gam(
+  log(sd_R) ~ Re + Fr + s(St, k = 5),
+  data = train,
+  method = "REML"
+)
+```
+
+```{r}
+summary(model_sd)
+plot(model_sd, shade = TRUE)
+gam.check(model_sd)
+```
+
+## Skewness spline model
+
+```{r}
+model_skewness <- gam(
+  log(skewness) ~ Re + Fr + s(St, k = 5),
+  data = train,
+  method = "REML"
+)
+```
+
+```{r}
+summary(model_skewness)
+plot(model_skewness, shade = TRUE)
+gam.check(model_skewness)
+```
+
+## Kurtosis spline model
+
+```{r}
+model_kurtosis <- gam(
+  log(kurtosis) ~ Re + Fr + s(St, k = 5),
+  data = train,
+  method = "REML"
+)
+```
+
+```{r}
+summary(model_kurtosis)
+plot(model_kurtosis, shade = TRUE)
+gam.check(model_kurtosis)
+```
+
+## 70/30 split evaluation
+
+```{r}
+set.seed(2026)
+data_train <- train |>
+  slice_sample(prop = 0.7)
+data_test <- train |>
+  anti_join(data_train, by = c("St", "Re", "Fr"))
+
+# Refit the same four model formulas on the training portion only.
+model_mean_train <- update(model_mean, data = data_train)
+model_sd_train <- update(model_sd, data = data_train)
+model_skewness_train <- update(model_skewness, data = data_train)
+model_kurtosis_train <- update(model_kurtosis, data = data_train)
+```
+
+
+```{r}
+predict_original <- function(model, newdata) {
+  smearing_factor <- mean(exp(residuals(model, type = "response")))
+  exp(predict(model, newdata = newdata)) * smearing_factor
+}
+
+predictions <- data_test |>
+  mutate(
+    pred_mean = predict_original(model_mean_train, data_test),
+    pred_sd = predict_original(model_sd_train, data_test),
+    pred_skewness = predict_original(model_skewness_train, data_test),
+    pred_kurtosis = predict_original(model_kurtosis_train, data_test)
+  )
+```
+
+```{r}
+score_predictions <- function(response, observed, predicted) {
+  tibble(
+    Response = response,
+    RMSE = sqrt(mean((observed - predicted)^2)),
+    MAE = mean(abs(observed - predicted))
+  )
+}
+
+performance <- bind_rows(
+  score_predictions("Mean", predictions$R_moment_1, predictions$pred_mean),
+  score_predictions("Standard deviation", predictions$sd_R, predictions$pred_sd),
+  score_predictions("Skewness", predictions$skewness, predictions$pred_skewness),
+  score_predictions("Kurtosis", predictions$kurtosis, predictions$pred_kurtosis)
+)
+performance
 ```
