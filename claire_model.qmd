@@ -4,23 +4,52 @@ format: pdf
 editor: visual
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+## Load data
 
 ```{r}
-1 + 1
-```
+library(tidyverse)
+library(mgcv)
 
-You can add options to executable code like this
+train <- read_csv("data-train.csv")
+```
 
 ```{r}
-#| echo: false
-2 * 2
+train <- train |>
+  mutate(
+    m1 = R_moment_1, m2 = R_moment_2,
+    m3 = R_moment_3, m4 = R_moment_4,
+
+    # Central moments
+    C_moment_2 = m2 - m1^2,
+    C_moment_3 = m3 - 3*m1*m2 + 2*m1^3,
+    C_moment_4 = m4 - 4*m1*m3 + 6*m1^2*m2 - 3*m1^4,
+
+    # Summary statistics
+    sd_R = sqrt(C_moment_2),
+    skewness = C_moment_3 / sd_R^3,
+    kurtosis = C_moment_4 / sd_R^4,
+    ex_kurt = kurtosis - 3,
+
+    # Keep infinite Fr as a valid category
+    Fr = as.factor(Fr),
+    Re = as.factor(Re)
+  )
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+## Fit a spline model for mean
+
+```{r}
+model_mean <- gam(
+  log(R_moment_1) ~ Re + Fr + s(St, k = 5),
+  data = train,
+  method = "REML"
+)
+```
+
+## Inspect the fit
+
+```{r}
+summary(model_mean)
+plot(model_mean, shade = TRUE)
+gam.check(model_mean)
+```
