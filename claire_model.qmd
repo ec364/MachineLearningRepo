@@ -46,7 +46,6 @@ model_mean <- gam(
 )
 ```
 
-
 ```{r}
 summary(model_mean)
 plot(model_mean, shade = TRUE)
@@ -101,22 +100,7 @@ plot(model_kurtosis, shade = TRUE)
 gam.check(model_kurtosis)
 ```
 
-## 70/30 split evaluation
-
-```{r}
-set.seed(2026)
-data_train <- train |>
-  slice_sample(prop = 0.7)
-data_test <- train |>
-  anti_join(data_train, by = c("St", "Re", "Fr"))
-
-# Refit the same four model formulas on the training portion only.
-model_mean_train <- update(model_mean, data = data_train)
-model_sd_train <- update(model_sd, data = data_train)
-model_skewness_train <- update(model_skewness, data = data_train)
-model_kurtosis_train <- update(model_kurtosis, data = data_train)
-```
-
+## LOOCV
 
 ```{r}
 predict_original <- function(model, newdata) {
@@ -124,12 +108,19 @@ predict_original <- function(model, newdata) {
   exp(predict(model, newdata = newdata)) * smearing_factor
 }
 
-predictions <- data_test |>
+loocv_predict <- function(model, data) {
+  map_dbl(seq_len(nrow(data)), function(i) {
+    fold_model <- update(model, data = data[-i, ])
+    predict_original(fold_model, data[i, ])
+  })
+}
+
+predictions <- train |>
   mutate(
-    pred_mean = predict_original(model_mean_train, data_test),
-    pred_sd = predict_original(model_sd_train, data_test),
-    pred_skewness = predict_original(model_skewness_train, data_test),
-    pred_kurtosis = predict_original(model_kurtosis_train, data_test)
+    pred_mean = loocv_predict(model_mean, train),
+    pred_sd = loocv_predict(model_sd, train),
+    pred_skewness = loocv_predict(model_skewness, train),
+    pred_kurtosis = loocv_predict(model_kurtosis, train)
   )
 ```
 
@@ -157,7 +148,7 @@ knitr::kable(
   performance,
   digits = c(0, 4, 5),
   format.args = list(big.mark = ","),
-  caption = "Spline model performance on the 30% validation set"
+  caption = "Spline model performance using LOOCV"
 )
 ```
 
@@ -193,10 +184,9 @@ ggplot(comparison_data, aes(x = Observed, y = Predicted)) +
   theme_minimal()
 ```
 
-Spline models predict mean cluster volume more successfully than the other three responses on this validation split.
+Spline models predict mean cluster volume more successfully than the other three responses using LOOCV.
 
 Many large skewness and kurtosis errors occur at `Fr` = 0.052.
-
 
 ## Extension: separate St curves by Fr
 
@@ -205,7 +195,7 @@ Many large skewness and kurtosis errors occur at `Fr` = 0.052.
 ```{r}
 model_sd_fr_train <- gam(
   log(sd_R) ~ Re + Fr + s(St, by = Fr, k = 5),
-  data = data_train,
+  data = train,
   method = "REML"
 )
 
@@ -215,12 +205,12 @@ gam.check(model_sd_fr_train)
 ```
 
 ```{r}
-sd_fr_prediction <- predict_original(model_sd_fr_train, data_test)
+sd_fr_prediction <- loocv_predict(model_sd_fr_train, train)
 
 sd_model_comparison <- bind_rows(
-  score_predictions("Shared St curve", data_test$sd_R,
+  score_predictions("Shared St curve", train$sd_R,
                     predictions$pred_sd),
-  score_predictions("Fr-specific St curves", data_test$sd_R,
+  score_predictions("Fr-specific St curves", train$sd_R,
                     sd_fr_prediction)
 ) |>
   rename(Model = Response)
@@ -233,10 +223,10 @@ knitr::kable(sd_model_comparison, digits = 2,
 #| fig-width: 8
 #| fig-height: 4
 sd_plot_data <- bind_rows(
-  tibble(Model = "Shared St curve", Observed = data_test$sd_R,
-         Predicted = predictions$pred_sd, Fr = data_test$Fr),
-  tibble(Model = "Fr-specific St curves", Observed = data_test$sd_R,
-         Predicted = sd_fr_prediction, Fr = data_test$Fr)
+  tibble(Model = "Shared St curve", Observed = train$sd_R,
+         Predicted = predictions$pred_sd, Fr = train$Fr),
+  tibble(Model = "Fr-specific St curves", Observed = train$sd_R,
+         Predicted = sd_fr_prediction, Fr = train$Fr)
 )
 
 ggplot(sd_plot_data, aes(Observed, Predicted, color = Fr)) +
@@ -247,13 +237,12 @@ ggplot(sd_plot_data, aes(Observed, Predicted, color = Fr)) +
   theme_minimal()
 ```
 
-
 **Skewness**
 
 ```{r}
 model_skewness_fr_train <- gam(
   log(skewness) ~ Re + Fr + s(St, by = Fr, k = 5),
-  data = data_train,
+  data = train,
   method = "REML"
 )
 
@@ -263,12 +252,12 @@ gam.check(model_skewness_fr_train)
 ```
 
 ```{r}
-skewness_fr_prediction <- predict_original(model_skewness_fr_train, data_test)
+skewness_fr_prediction <- loocv_predict(model_skewness_fr_train, train)
 
 skewness_model_comparison <- bind_rows(
-  score_predictions("Shared St curve", data_test$skewness,
+  score_predictions("Shared St curve", train$skewness,
                     predictions$pred_skewness),
-  score_predictions("Fr-specific St curves", data_test$skewness,
+  score_predictions("Fr-specific St curves", train$skewness,
                     skewness_fr_prediction)
 ) |>
   rename(Model = Response)
@@ -281,10 +270,10 @@ knitr::kable(skewness_model_comparison, digits = 2,
 #| fig-width: 8
 #| fig-height: 4
 skewness_plot_data <- bind_rows(
-  tibble(Model = "Shared St curve", Observed = data_test$skewness,
-         Predicted = predictions$pred_skewness, Fr = data_test$Fr),
-  tibble(Model = "Fr-specific St curves", Observed = data_test$skewness,
-         Predicted = skewness_fr_prediction, Fr = data_test$Fr)
+  tibble(Model = "Shared St curve", Observed = train$skewness,
+         Predicted = predictions$pred_skewness, Fr = train$Fr),
+  tibble(Model = "Fr-specific St curves", Observed = train$skewness,
+         Predicted = skewness_fr_prediction, Fr = train$Fr)
 )
 
 ggplot(skewness_plot_data, aes(Observed, Predicted, color = Fr)) +
@@ -295,12 +284,12 @@ ggplot(skewness_plot_data, aes(Observed, Predicted, color = Fr)) +
   theme_minimal()
 ```
 
+**Kurtosis**
 
-**Kurtosis** 
 ```{r}
 model_kurtosis_fr_train <- gam(
   log(kurtosis) ~ Re + Fr + s(St, by = Fr, k = 5),
-  data = data_train,
+  data = train,
   method = "REML"
 )
 
@@ -310,12 +299,12 @@ gam.check(model_kurtosis_fr_train)
 ```
 
 ```{r}
-kurtosis_fr_prediction <- predict_original(model_kurtosis_fr_train, data_test)
+kurtosis_fr_prediction <- loocv_predict(model_kurtosis_fr_train, train)
 
 kurtosis_model_comparison <- bind_rows(
-  score_predictions("Shared St curve", data_test$kurtosis,
+  score_predictions("Shared St curve", train$kurtosis,
                     predictions$pred_kurtosis),
-  score_predictions("Fr-specific St curves", data_test$kurtosis,
+  score_predictions("Fr-specific St curves", train$kurtosis,
                     kurtosis_fr_prediction)
 ) |>
   rename(Model = Response)
@@ -328,10 +317,10 @@ knitr::kable(kurtosis_model_comparison, digits = 2,
 #| fig-width: 8
 #| fig-height: 4
 kurtosis_plot_data <- bind_rows(
-  tibble(Model = "Shared St curve", Observed = data_test$kurtosis,
-         Predicted = predictions$pred_kurtosis, Fr = data_test$Fr),
-  tibble(Model = "Fr-specific St curves", Observed = data_test$kurtosis,
-         Predicted = kurtosis_fr_prediction, Fr = data_test$Fr)
+  tibble(Model = "Shared St curve", Observed = train$kurtosis,
+         Predicted = predictions$pred_kurtosis, Fr = train$Fr),
+  tibble(Model = "Fr-specific St curves", Observed = train$kurtosis,
+         Predicted = kurtosis_fr_prediction, Fr = train$Fr)
 )
 
 ggplot(kurtosis_plot_data, aes(Observed, Predicted, color = Fr)) +
@@ -342,4 +331,10 @@ ggplot(kurtosis_plot_data, aes(Observed, Predicted, color = Fr)) +
   theme_minimal()
 ```
 
-None was better :(
+Under LOOCV, Fr-specific curves still have higher RMSE and MAE for SD and skewness. For kurtosis, they modestly improve both metrics: RMSE decreases from about 152,604 to 147,246 and MAE from 81,908 to 80,625.
+
+-   Mean predictions track observed values reasonably well.
+
+-   Large standard deviations are still underpredicted.
+
+-   Skewness and kurtosis still have substantial prediction errors.

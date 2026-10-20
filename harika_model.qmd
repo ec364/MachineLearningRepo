@@ -11,7 +11,7 @@ editor: visual
 
 library(tidyverse)
 library(moments)
-library(caret)
+library(boot)
 
 data <- read_csv("data-train.csv")
 ```
@@ -48,17 +48,71 @@ data <- data |>
   )
 ```
 
+```{r}
+#| label: eda
+
+plot(data_train$St)
+plot(log(data_train$St))
+
+```
 
 ```{r}
 #| label: train
 
-set.seed(2026)
-data_train <- data |>
-  slice_sample(prop = 0.7)
-data_test <- data |>
-  anti_join(data_train)
+#basic linear models for all
+#mean
+mean.fit <- glm(R_moment_1 ~ St + Re + Fr, family = gaussian, data = data)
+#sd
+sd.fit <- glm(sd_R ~ St + Re + Fr, family = gaussian, data = data)
+#skewness
+skewness.fit <- glm(skewness ~ St + Re + Fr, family = gaussian, data = data)
+#kurtosis
+kurtosis.fit <- glm(kurtosis ~ St + Re + Fr, family = gaussian, data = data)
 
-train.model <- glm(R_moment_1 ~ St + Re + Fr, family = gaussian, data = data_train)
+#log St linear models
+#mean
+mean.fit.log <- glm(R_moment_1 ~ log(St) + Re + Fr, family = gaussian, data = data)
+#sd
+sd.fit.log <- glm(sd_R ~ log(St) + Re + Fr, family = gaussian, data = data)
+#skewness
+skewness.fit.log <- glm(skewness ~ log(St) + Re + Fr, family = gaussian, data = data)
+#kurtosis
+kurtosis.fit.log <- glm(kurtosis ~ log(St) + Re + Fr, family = gaussian, data = data)
 
+#cv for mean fits
+cv.err.mean <- cv.glm(data, mean.fit)
+cv.err.mean.log <- cv.glm(data, mean.fit.log)
+
+#cv for sd fits
+cv.err.sd <- cv.glm(data, sd.fit)
+cv.err.sd.log <- cv.glm(data, sd.fit.log)
+
+#cv for skewness fits
+cv.err.skewness <- cv.glm(data, skewness.fit)
+cv.err.skewness.log <- cv.glm(data, skewness.fit.log)
+
+#cv for kurtosis fits
+cv.err.kurtosis <- cv.glm(data, kurtosis.fit)
+cv.err.kurtosis.log <- cv.glm(data, kurtosis.fit.log)
+```
+
+
+```{r}
+#| label: results
+
+cv.err.mean$delta
+cv.err.mean.log$delta
+
+#cv for sd fits
+cv.err.sd$delta
+cv.err.sd.log$delta
+
+#cv for skewness fits
+cv.err.skewness$delta
+cv.err.skewness.log$delta
+
+#cv for kurtosis fits
+cv.err.kurtosis$delta
+cv.err.kurtosis.log$delta
 
 ```

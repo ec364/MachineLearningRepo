@@ -4,23 +4,142 @@ format: pdf
 editor: visual
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
-
 ```{r}
-1 + 1
+#load packages
+library(tidyverse)
+
+#load data
+train <- read_csv("data-train.csv")
+
+#transform data
+#making new variables for our summary stats
+
+#mean = R_moment_1, C_moment_2 is variance, everything else is as commented
+train <- train %>%
+  mutate(
+    m1 = R_moment_1, m2 = R_moment_2, m3 = R_moment_3, m4 = R_moment_4,
+    
+    # central moments
+    C_moment_2 = m2 - m1^2,                               # variance
+    C_moment_3 = m3 - 3*m1*m2 + 2*m1^3,
+    C_moment_4 = m4 - 4*m1*m3 + 6*m1^2*m2 - 3*m1^4,
+    
+    # standardized versions
+    sd_R     = sqrt(C_moment_2),
+    skewness = C_moment_3 / sd_R^3,
+    kurtosis = C_moment_4 / sd_R^4,                       # raw kurtosis
+    ex_kurt  = kurtosis - 3                               # excess kurtosis
+  )
+
+train <- train %>%
+  mutate(
+    Re_group = factor(Re),
+    Fr_group = factor(Fr)
+  )
+
+outcomes <- c("m1", "sd_R", "skewness", "kurtosis")
+
+summary(train[outcomes])
 ```
 
-You can add options to executable code like this
-
 ```{r}
-#| echo: false
-2 * 2
+eda_data <- train %>%
+  select(St, Re_group, Fr_group, all_of(outcomes)) %>%
+  pivot_longer(
+    cols = all_of(outcomes),
+    names_to = "outcome",
+    values_to = "value"
+  )
+
+# Distributions of the outcomes
+ggplot(eda_data, aes(x = value)) +
+  geom_histogram(bins = 20, color = "white", fill = "steelblue") +
+  facet_wrap(~ outcome, scales = "free") +
+  theme_minimal()
+
+# Relationships with St, separated by Re and Fr
+ggplot(
+  eda_data,
+  aes(x = St, y = value, color = Re_group)
+) +
+  geom_point() +
+  facet_grid(outcome ~ Fr_group, scales = "free_y") +
+  labs(color = "Re", y = "Outcome", title = "Outcomes versus St by Re and Fr") +
+  theme_minimal()
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+```{r}
+results <- list()
+fits <- list()
+
+for (outcome in outcomes) {
+  for (degree in 1:5) {
+    
+    model_formula <- as.formula(
+      paste0(
+        outcome,
+        " ~ Re_group + Fr_group + poly(St, ",
+        degree, ")"
+      )
+    )
+    
+    predictions <- numeric(nrow(train))
+    
+    # Leave-one-out cross-validation
+    for (i in seq_len(nrow(train))) {
+      fit <- lm(model_formula, data = train[-i, ])
+      
+      predictions[i] <- predict(
+        fit,
+        newdata = train[i, , drop = FALSE]
+      )
+    }
+    
+    observed <- train[[outcome]]
+    model_name <- paste(outcome, degree, sep = "_degree_")
+    
+    results[[model_name]] <- data.frame(
+      outcome = outcome,
+      degree = degree,
+      RMSE = sqrt(mean((observed - predictions)^2)),
+      MAE = mean(abs(observed - predictions))
+    )
+    
+    # Save the model fitted on all observations
+    fits[[model_name]] <- lm(model_formula, data = train)
+  }
+}
+
+cv_results <- do.call(rbind, results)
+rownames(cv_results) <- NULL
+
+cv_results <- cv_results[
+  order(cv_results$outcome, cv_results$RMSE),
+]
+
+print(cv_results)
+```
+
+```{r}
+# Plot both error measures
+cv_results %>%
+  pivot_longer(
+    cols = c(RMSE, MAE),
+    names_to = "metric",
+    values_to = "error"
+  ) %>%
+  ggplot(aes(x = degree, y = error)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(vars(outcome, metric), scales = "free_y") +
+  scale_x_continuous(breaks = 1:5) +
+  theme_minimal()
+
+# Lowest LOOCV RMSE for each outcome
+best_models <- cv_results %>%
+  group_by(outcome) %>%
+  slice_min(RMSE, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+best_models
+```
