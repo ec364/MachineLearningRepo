@@ -148,5 +148,51 @@ performance <- bind_rows(
   score_predictions("Skewness", predictions$skewness, predictions$pred_skewness),
   score_predictions("Kurtosis", predictions$kurtosis, predictions$pred_kurtosis)
 )
-performance
 ```
+
+## Prediction performance summary
+
+```{r}
+knitr::kable(
+  performance,
+  digits = c(0, 4, 5),
+  format.args = list(big.mark = ","),
+  caption = "Spline model performance on the 30% validation set"
+)
+```
+
+## Observed versus predicted: all four responses
+
+```{r}
+compare_response <- function(label, observed, predicted) {
+  tibble(
+    Response = label,
+    St = predictions$St, Re = predictions$Re, Fr = predictions$Fr,
+    Observed = observed,
+    Predicted = predicted,
+    Absolute_error = abs(predicted - observed)
+  )
+}
+
+comparison_data <- bind_rows(
+  compare_response("Mean", predictions$R_moment_1, predictions$pred_mean),
+  compare_response("Standard deviation", predictions$sd_R, predictions$pred_sd),
+  compare_response("Skewness", predictions$skewness, predictions$pred_skewness),
+  compare_response("Kurtosis", predictions$kurtosis, predictions$pred_kurtosis)
+)
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+ggplot(comparison_data, aes(x = Observed, y = Predicted)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_point(aes(color = Fr), size = 2) +
+  facet_wrap(~Response, scales = "free") +
+  labs(x = "Observed response", y = "Held-out prediction", color = "Fr") +
+  theme_minimal()
+```
+
+Spline models predict mean cluster volume more successfully than the other three responses on this validation split.
+
+Many large skewness and kurtosis errors occur at `Fr` = 0.052.
