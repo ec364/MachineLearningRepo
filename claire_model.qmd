@@ -196,3 +196,150 @@ ggplot(comparison_data, aes(x = Observed, y = Predicted)) +
 Spline models predict mean cluster volume more successfully than the other three responses on this validation split.
 
 Many large skewness and kurtosis errors occur at `Fr` = 0.052.
+
+
+## Extension: separate St curves by Fr
+
+**Sd**
+
+```{r}
+model_sd_fr_train <- gam(
+  log(sd_R) ~ Re + Fr + s(St, by = Fr, k = 5),
+  data = data_train,
+  method = "REML"
+)
+
+summary(model_sd_fr_train)
+plot(model_sd_fr_train, shade = TRUE, pages = 1)
+gam.check(model_sd_fr_train)
+```
+
+```{r}
+sd_fr_prediction <- predict_original(model_sd_fr_train, data_test)
+
+sd_model_comparison <- bind_rows(
+  score_predictions("Shared St curve", data_test$sd_R,
+                    predictions$pred_sd),
+  score_predictions("Fr-specific St curves", data_test$sd_R,
+                    sd_fr_prediction)
+) |>
+  rename(Model = Response)
+
+knitr::kable(sd_model_comparison, digits = 2,
+             caption = "Standard deviation: baseline versus Fr-specific curves")
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 4
+sd_plot_data <- bind_rows(
+  tibble(Model = "Shared St curve", Observed = data_test$sd_R,
+         Predicted = predictions$pred_sd, Fr = data_test$Fr),
+  tibble(Model = "Fr-specific St curves", Observed = data_test$sd_R,
+         Predicted = sd_fr_prediction, Fr = data_test$Fr)
+)
+
+ggplot(sd_plot_data, aes(Observed, Predicted, color = Fr)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_point(size = 2) +
+  facet_wrap(~Model) +
+  labs(x = "Observed standard deviation", y = "Held-out prediction") +
+  theme_minimal()
+```
+
+
+**Skewness**
+
+```{r}
+model_skewness_fr_train <- gam(
+  log(skewness) ~ Re + Fr + s(St, by = Fr, k = 5),
+  data = data_train,
+  method = "REML"
+)
+
+summary(model_skewness_fr_train)
+plot(model_skewness_fr_train, shade = TRUE, pages = 1)
+gam.check(model_skewness_fr_train)
+```
+
+```{r}
+skewness_fr_prediction <- predict_original(model_skewness_fr_train, data_test)
+
+skewness_model_comparison <- bind_rows(
+  score_predictions("Shared St curve", data_test$skewness,
+                    predictions$pred_skewness),
+  score_predictions("Fr-specific St curves", data_test$skewness,
+                    skewness_fr_prediction)
+) |>
+  rename(Model = Response)
+
+knitr::kable(skewness_model_comparison, digits = 2,
+             caption = "Skewness: baseline versus Fr-specific curves")
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 4
+skewness_plot_data <- bind_rows(
+  tibble(Model = "Shared St curve", Observed = data_test$skewness,
+         Predicted = predictions$pred_skewness, Fr = data_test$Fr),
+  tibble(Model = "Fr-specific St curves", Observed = data_test$skewness,
+         Predicted = skewness_fr_prediction, Fr = data_test$Fr)
+)
+
+ggplot(skewness_plot_data, aes(Observed, Predicted, color = Fr)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_point(size = 2) +
+  facet_wrap(~Model) +
+  labs(x = "Observed skewness", y = "Held-out prediction") +
+  theme_minimal()
+```
+
+
+**Kurtosis** 
+```{r}
+model_kurtosis_fr_train <- gam(
+  log(kurtosis) ~ Re + Fr + s(St, by = Fr, k = 5),
+  data = data_train,
+  method = "REML"
+)
+
+summary(model_kurtosis_fr_train)
+plot(model_kurtosis_fr_train, shade = TRUE, pages = 1)
+gam.check(model_kurtosis_fr_train)
+```
+
+```{r}
+kurtosis_fr_prediction <- predict_original(model_kurtosis_fr_train, data_test)
+
+kurtosis_model_comparison <- bind_rows(
+  score_predictions("Shared St curve", data_test$kurtosis,
+                    predictions$pred_kurtosis),
+  score_predictions("Fr-specific St curves", data_test$kurtosis,
+                    kurtosis_fr_prediction)
+) |>
+  rename(Model = Response)
+
+knitr::kable(kurtosis_model_comparison, digits = 2,
+             caption = "Kurtosis: baseline versus Fr-specific curves")
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 4
+kurtosis_plot_data <- bind_rows(
+  tibble(Model = "Shared St curve", Observed = data_test$kurtosis,
+         Predicted = predictions$pred_kurtosis, Fr = data_test$Fr),
+  tibble(Model = "Fr-specific St curves", Observed = data_test$kurtosis,
+         Predicted = kurtosis_fr_prediction, Fr = data_test$Fr)
+)
+
+ggplot(kurtosis_plot_data, aes(Observed, Predicted, color = Fr)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_point(size = 2) +
+  facet_wrap(~Model) +
+  labs(x = "Observed kurtosis", y = "Held-out prediction") +
+  theme_minimal()
+```
+
+None was better :(
