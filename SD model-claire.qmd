@@ -1,0 +1,176 @@
+---
+title: "SD model - Claire"
+format: pdf
+editor: visual
+execute:
+  message: false
+---
+
+```{r}
+library(tidyverse)
+
+train <- read_csv("data-train.csv") |>
+  mutate(
+    C_moment_2 = R_moment_2 - R_moment_1^2,
+    sd_R = sqrt(C_moment_2),
+    Re = factor(Re),
+    Fr = factor(Fr)
+  )
+stopifnot(all(is.finite(train$sd_R)), all(train$sd_R > 0),
+          all(train$St > 0))
+```
+
+## Explore SD and St
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+par(mfrow = c(2, 2))
+hist(train$sd_R, main = "SD", xlab = "SD")
+hist(log(train$sd_R), main = "Log SD", xlab = "log(SD)")
+hist(train$St, main = "St", xlab = "St")
+hist(log(train$St), main = "Log St", xlab = "log(St)")
+par(mfrow = c(1, 1))
+```
+
+## Compare log transformations using LOOCV
+
+
+```{r}
+log_formulas <- list(
+  no_logs = sd_R ~ St + Re + Fr,
+  log_SD = log(sd_R) ~ St + Re + Fr,
+  log_St = sd_R ~ log(St) + Re + Fr,
+  log_both = log(sd_R) ~ log(St) + Re + Fr
+)
+
+evaluate_sd <- function(formula, data) {
+  log_response <- grepl("log", deparse(formula[[2]]), fixed = TRUE)
+  predictions <- numeric(nrow(data))
+  for (i in seq_len(nrow(data))) {
+    fit <- lm(formula, data = data[-i, ])
+    pred <- predict(fit, newdata = data[i, , drop = FALSE],
+                    rankdeficient = "NA")
+    if (log_response) {
+      correction <- mean(exp(residuals(fit)))
+      pred <- exp(pred) * correction
+    }
+    predictions[i] <- pred
+  }
+  stopifnot(all(is.finite(predictions)))
+  list(
+    fit = lm(formula, data = data),
+    predictions = predictions,
+    RMSE = sqrt(mean((data$sd_R - predictions)^2)),
+    MAE = mean(abs(data$sd_R - predictions)),
+    negative_predictions = sum(predictions < 0)
+  )
+}
+
+log_evaluations <- lapply(log_formulas, evaluate_sd, data = train)
+log_comparison <- imap_dfr(log_evaluations, function(result, name) {
+  tibble(model = name, RMSE = result$RMSE, MAE = result$MAE,
+         negative_predictions = result$negative_predictions)
+}) |>
+  arrange(RMSE)
+knitr::kable(log_comparison, digits = 4)
+
+best_log_name <- log_comparison$model[1]
+best_additive <- log_evaluations[[best_log_name]]$fit
+best_log_name
+```
+
+## Diagnostics for the best additive model
+
+```{r}
+#| fig-width: 8
+#| fig-height: 7
+summary(best_additive)
+par(mfrow = c(2, 2))
+plot(best_additive)
+par(mfrow = c(1, 1))
+```
+
+## Compare interaction effects
+
+
+```{r}
+# Build the interaction formulas using the selected log combination.
+y_term <- if (best_log_name %in% c("log_SD", "log_both")) "log(sd_R)" else "sd_R"
+x_term <- if (best_log_name %in% c("log_St", "log_both")) "log(St)" else "St"
+interaction_rhs <- c(
+  additive = paste(x_term, "+ Re + Fr"),
+  Re_Fr = paste(x_term, "+ Re * Fr"),
+  St_Re = paste(x_term, "* Re + Fr"),
+  St_Fr = paste(x_term, "* Fr + Re"),
+  pairwise = paste0("(", x_term, " + Re + Fr)^2"),
+  threeway = paste(x_term, "* Re * Fr")
+)
+interaction_formulas <- lapply(interaction_rhs, function(rhs) {
+  as.formula(paste(y_term, "~", rhs))
+})
+interaction_evaluations <- lapply(interaction_formulas, evaluate_sd, data = train)
+interaction_comparison <- imap_dfr(interaction_evaluations, function(result, name) {
+  tibble(model = name, RMSE = result$RMSE, MAE = result$MAE,
+         parameters = result$fit$rank,
+         AIC = AIC(result$fit), BIC = BIC(result$fit),
+         negative_predictions = result$negative_predictions)
+}) |>
+  arrange(RMSE)
+knitr::kable(interaction_comparison, digits = 4)
+
+best_interaction_name <- interaction_comparison$model[1]
+final_sd <- interaction_evaluations[[best_interaction_name]]$fit
+final_sd_predictions <- interaction_evaluations[[best_interaction_name]]$predictions
+formula(final_sd)
+```
+
+
+## Final-model summary and diagnostics
+
+```{r}
+#| fig-width: 8
+#| fig-height: 7
+summary(final_sd)
+par(mfrow = c(2, 2))
+plot(final_sd)
+par(mfrow = c(1, 1))
+```
+
+
+## Held-out predictions and largest errors
+
+```{r}
+sd_predictions <- train |>
+  mutate(row_id = row_number(), predicted_SD = final_sd_predictions,
+         absolute_error = abs(sd_R - predicted_SD))
+
+ggplot(sd_predictions, aes(sd_R, predicted_SD, color = Fr, shape = Re)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_point(size = 2) +
+  labs(x = "Observed SD", y = "LOOCV predicted SD") +
+  theme_minimal()
+
+sd_predictions |>
+  slice_max(absolute_error, n = 5, with_ties = FALSE) |>
+  select(row_id, St, Re, Fr, sd_R, predicted_SD, absolute_error) |>
+  knitr::kable(digits = 4, caption = "Five largest LOOCV errors")
+```
+
+
+Among the additive models, logging both SD and St gives the lowest LOOCV RMSE
+(about 5.99) and MAE (2.52). Keeping those transformations and adding a Re-Fr
+interaction reduces RMSE to about 2.90 and MAE to 0.98, the lowest values among
+the interaction candidates. The selected model is
+`log(sd_R) ~ log(St) + Re * Fr`. It has no negative LOOCV predictions.
+
+This suggests that the association between gravitational condition and SD
+differs across Reynolds-number levels. The estimated log-St coefficient is
+about 0.469, describing a positive adjusted association with SD; its slope is
+shared across conditions in this model. These are model-based associations.
+
+The Q-Q plot shows lower-tail departures, and residual plots flag observations
+82, 87, and 30 for investigation. The scale-location plot also suggests that
+residual spread is not fully constant. Keep all observations unless a data
+error or scientific reason justifies exclusion. Model selection improves
+predictive accuracy but does not remove these diagnostic limitations.
