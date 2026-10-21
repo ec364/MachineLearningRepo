@@ -143,3 +143,220 @@ best_models <- cv_results %>%
 
 best_models
 ```
+
+## Linear Model Mean
+
+```{r}
+data <- train %>%
+  mutate(
+    Re = factor(Re),
+    Fr = factor(Fr)
+  )
+
+formulas <- list(
+  no_logs  = m1 ~ St + Re + Fr,
+  log_mean = log(m1) ~ St + Re + Fr,
+  log_St   = m1 ~ log(St) + Re + Fr,
+  log_both = log(m1) ~ log(St) + Re + Fr
+)
+
+results <- list()
+mean_fits <- list()
+
+for (model_name in names(formulas)) {
+  
+  predictions <- numeric(nrow(data))
+  log_response <- model_name %in% c("log_mean", "log_both")
+  
+  for (i in seq_len(nrow(data))) {
+    
+    # Fit without observation i
+    fit <- lm(formulas[[model_name]], data = data[-i, ])
+    
+    pred <- predict(fit, newdata = data[i, , drop = FALSE])
+    
+    if (log_response) {
+      # estimated only from this fold's training observations
+      correction <- mean(exp(residuals(fit)))
+      pred <- exp(pred) * correction
+    }
+    
+    predictions[i] <- pred
+  }
+  
+  results[[model_name]] <- tibble(
+    model = model_name,
+    RMSE = sqrt(mean((data$m1 - predictions)^2)),
+    MAE = mean(abs(data$m1 - predictions))
+  )
+  
+  mean_fits[[model_name]] <- lm(
+    formulas[[model_name]],
+    data = data
+  )
+}
+
+mean_comparison <- bind_rows(results) %>%
+  arrange(RMSE)
+
+mean_comparison
+```
+
+Among the additive models, logging both mean volume and `St` produced the lowest original-scale LOOCV RMSE (0.01078) and MAE (0.00572). We therefore used both log transformations when investigating interactions.
+
+```{r}
+par(mfrow = c(2, 2))
+plot(mean_fits[["log_both"]])
+par(mfrow = c(1, 1))
+```
+
+The log–log model’s residuals were broadly centered around zero, with no strong overall curvature. The Q–Q plot appeared approximately linear, although some tail departures remain. Differences in residual spread across fitted values suggest that the transformation did not fully stabilize variance, motivating further investigation of interaction effects.
+
+```{r}
+# Compare interaction effects, keeping both log transformations
+formulas <- list(
+  additive = log(m1) ~ log(St) + Re + Fr,
+  Re_Fr = log(m1) ~ log(St) + Re * Fr,
+  St_Re = log(m1) ~ log(St) * Re + Fr,
+  St_Fr = log(m1) ~ log(St) * Fr + Re,
+  pairwise = log(m1) ~ (log(St) + Re + Fr)^2,
+  threeway = log(m1) ~ log(St) * Re * Fr
+)
+
+interaction_results <- list()
+interaction_fits <- list()
+
+for (model_name in names(formulas)) {
+  
+  predictions <- numeric(nrow(data))
+  
+  for (i in seq_len(nrow(data))) {
+    
+    fit <- lm(formulas[[model_name]], data = data[-i, ])
+    
+    pred <- predict(fit, newdata = data[i, , drop = FALSE])
+    
+    # Back-transform using a training-fold smearing correction
+    correction <- mean(exp(residuals(fit)))
+    predictions[i] <- exp(pred) * correction
+  }
+  
+  interaction_results[[model_name]] <- tibble(
+    model = model_name,
+    RMSE = sqrt(mean((data$m1 - predictions)^2)),
+    MAE = mean(abs(data$m1 - predictions))
+  )
+  
+  interaction_fits[[model_name]] <- lm(
+    formulas[[model_name]],
+    data = data
+  )
+}
+
+# Retrieve the saved models
+m_additive <- interaction_fits[["additive"]]
+m_Re_Fr <- interaction_fits[["Re_Fr"]]
+m_St_Re <- interaction_fits[["St_Re"]]
+m_St_Fr <- interaction_fits[["St_Fr"]]
+m_pairwise <- interaction_fits[["pairwise"]]
+m_threeway <- interaction_fits[["threeway"]]
+
+# Compare nested models using partial F-tests
+anova(m_additive, m_pairwise, m_threeway)
+
+# Compare all candidates: lower AIC/BIC is preferred
+AIC(m_additive, m_Re_Fr, m_St_Re, m_St_Fr,
+    m_pairwise, m_threeway)
+
+BIC(m_additive, m_Re_Fr, m_St_Re, m_St_Fr,
+    m_pairwise, m_threeway)
+
+# Coefficients and model summaries
+summary(m_additive)
+summary(m_Re_Fr)
+summary(m_St_Re)
+summary(m_St_Fr)
+summary(m_pairwise)
+summary(m_threeway)
+
+interaction_comparison <- bind_rows(interaction_results) %>%
+  arrange(RMSE)
+
+interaction_comparison
+
+final_mean <- m_pairwise
+
+summary(final_mean)
+
+par(mfrow = c(2, 2))
+plot(final_mean)
+par(mfrow = c(1, 1))
+```
+
+The pairwise interaction model achieved the lowest original-scale LOOCV RMSE (0.00766), while the three-way model achieved the lowest MAE (0.00304). AIC favored the three-way model, whereas BIC differed by only 0.35 between the two models, offering little distinction. The nested-model ANOVA also supported adding three-way terms (p=0.0097), although this measures improvement in training fit rather than predictive performance. We selected the pairwise model because it had lower cross-validated RMSE and fewer parameters, while acknowledging that the three-way model performed better under MAE.
+
+```{r}
+fit <- final_mean
+
+influence_table <- tibble(
+  row = rownames(model.frame(fit)),
+  cooks_distance = cooks.distance(fit),
+  leverage = hatvalues(fit),
+  studentized_residual = rstudent(fit)
+) %>%
+  arrange(desc(cooks_distance))
+
+head(influence_table, 10)
+
+# Screening threshold, not an automatic deletion rule
+4 / nobs(fit)
+```
+
+```{r}
+# Inspect the three observations using their row names
+data[match(c("51", "8", "50"), rownames(data)),
+     c("St", "Re", "Fr", "m1")]
+
+mean_formula <- formula(final_mean)
+fit_no51 <- lm(mean_formula, data = data[-51, ])
+fit_no8  <- lm(mean_formula, data = data[-8, ])
+fit_no50 <- lm(mean_formula, data = data[-50, ])
+
+# Match coefficients by name
+terms <- names(coef(final_mean))
+
+coef_comparison <- cbind(
+  full = coef(final_mean)[terms],
+  without_51 = coef(fit_no51)[terms],
+  without_8 = coef(fit_no8)[terms],
+  without_50 = coef(fit_no50)[terms]
+)
+
+round(coef_comparison, 4)
+
+# Calculate changes relative to full-model standard errors
+full_se <- sqrt(diag(vcov(final_mean)))[terms]
+
+changes <- sweep(
+  coef_comparison[, -1, drop = FALSE],
+  1, coef(final_mean)[terms], "-"
+)
+
+changes_in_se <- sweep(changes, 1, full_se, "/")
+
+round(changes_in_se, 2)
+```
+
+Observations 51, 8, and 50 were investigated because of their relatively large Cook’s distances and studentized residuals. Removing each observation separately produced mostly modest coefficient changes. Observation 51 had the greatest effect, shifting the `FrInf` coefficient by approximately 1.2 full-model standard errors; all other changes were less than one standard error. These checks suggested some sensitivity in individual effects but did not indicate that one observation dominated the coefficient estimates. All observations were retained because no data error or substantive reason for exclusion was identified.
+
+```{r}
+table(data$Re, data$Fr)
+
+# Any NA coefficients are not independently estimable
+coef(final_mean)
+
+# Shows dependencies among model coefficients
+alias(final_mean)
+```
+
+The interaction for `Re = 398` and `Fr = 0.3` was not estimable because no training simulations were available at that combination.
