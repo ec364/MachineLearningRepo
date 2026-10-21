@@ -154,5 +154,542 @@ cv_results %>%
   arrange(response, alpha)
 ```
 
+## Now trying linear regression
+
+```{r}
+## Load Data
+#| label: packages-data
+
+library(tidyverse)
+library(moments)
+library(boot)
+
+data <- read_csv("data-train.csv")
+```
+
+## Transform Data
+
+```{r}
+#| label: transform
+
+#making new variables for our summary stats
+
+#mean = R_moment_1, C_moment_2 is variance, everything else is as commented
+data <- data |>
+  mutate(
+    m1 = R_moment_1, m2 = R_moment_2, m3 = R_moment_3, m4 = R_moment_4,
+
+    # central moments
+    C_moment_2 = m2 - m1^2,                               # variance
+    C_moment_3 = m3 - 3*m1*m2 + 2*m1^3,
+    C_moment_4 = m4 - 4*m1*m3 + 6*m1^2*m2 - 3*m1^4,
+
+    # standardized versions
+    sd_R     = sqrt(C_moment_2),
+    skewness = C_moment_3 / sd_R^3,
+    kurtosis = C_moment_4 / sd_R^4,                       # raw kurtosis
+    ex_kurt  = kurtosis - 3                               # excess kurtosis
+  )
+
+#using a categorical to address infinity
+data <- data |>
+  mutate(
+    Fr = as.factor(Fr),
+    Re = as.factor(Re)
+  )
+```
+
+```{r}
+data
+```
+
+## EDA
+```{r}
+library(tidyverse)
+
+# 1. Check distributions and data quality
+summary(data |> select(St, Re, Fr, skewness))
+colSums(is.na(data |> select(St, Re, Fr, skewness)))
+
+# Frequency of categorical explanatory variables
+table(data$Re)
+table(data$Fr)
+
+# 2. Distribution of continuous St
+ggplot(data, aes(x = St)) +
+  geom_histogram(bins = 30, color = "white") +
+  labs(title = "Distribution of St", x = "St", y = "Count") +
+  theme_minimal()
+
+ggplot(data, aes(x = St)) +
+  geom_density(na.rm = TRUE) +
+  labs(title = "Density of St") +
+  theme_minimal()
+
+# 3. Distributions of categorical explanatory variables
+ggplot(data, aes(x = Re)) +
+  geom_bar() +
+  labs(title = "Distribution of Re", x = "Re", y = "Count") +
+  theme_minimal()
+
+ggplot(data, aes(x = Fr)) +
+  geom_bar() +
+  labs(title = "Distribution of Fr", x = "Fr", y = "Count") +
+  theme_minimal()
+
+# 4. Examine skewness across explanatory variables
+ggplot(data, aes(x = St, y = skewness)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", se = TRUE) +
+  labs(title = "Skewness vs. St") +
+  theme_minimal()
+
+ggplot(data, aes(x = Re, y = skewness)) +
+  geom_boxplot() +
+  labs(title = "Skewness across Re levels") +
+  theme_minimal()
+
+ggplot(data, aes(x = Fr, y = skewness)) +
+  geom_boxplot() +
+  labs(title = "Skewness across Fr levels") +
+  theme_minimal()
+```
+## Model Testing
+```{r}
+# Model 1: Linear main effects
+m1 <- lm(skewness ~ St + Re + Fr, data = data)
+
+# Model 2: Log-transformed St
+m2 <- lm(skewness ~ log(St) + Re + Fr, data = data)
+
+# Model 3: Log-transformed skewness, normal St
+m3 <- lm(log(skewness) ~ St + Re + Fr, data = data)
+
+# Model 4: Log-transformed skewness, log-transformed St
+m4 <- lm(log(skewness) ~ log(St) + Re + Fr, data = data)
+
+# Model 5: All pairwise interactions, no transformations
+m5 <- lm(skewness ~ St * Re + St * Fr + Re * Fr,
+         data = data)
+
+# Model 6: All pairwise interactions + three-way interaction
+m6 <- lm(skewness ~ St * Re * Fr,
+         data = data)
+
+# Model 7: Log(St) + all pairwise interactions
+m7 <- lm(skewness ~ log(St) * Re +
+                     log(St) * Fr +
+                     Re * Fr,
+         data = data)
+
+# Model 8: Log(St) + all interactions, including three-way
+m8 <- lm(skewness ~ log(St) * Re * Fr,
+         data = data)
+
+# Model 9: Log(skewness) + all pairwise interactions
+m9 <- lm(log(skewness) ~ St * Re +
+                         St * Fr +
+                         Re * Fr,
+         data = data)
+
+# Model 10: Log(skewness) + all interactions, including three-way
+m10 <- lm(log(skewness) ~ St * Re * Fr,
+          data = data)
+
+# Model 11: Both logs + all pairwise interactions
+m11 <- lm(log(skewness) ~ log(St) * Re +
+                          log(St) * Fr +
+                          Re * Fr,
+          data = data)
+
+# Model 12: Both logs + all interactions, including three-way
+m12 <- lm(log(skewness) ~ log(St) * Re * Fr,
+          data = data)
+
+# Interaction between St and Re; Fr stays a main effect
+m15 <- lm(skewness ~ St * Re + Fr, data = data)
+
+# Interaction between St and Fr; Re stays a main effect
+m16 <- lm(skewness ~ St * Fr + Re, data = data)
+
+# Interaction between Re and Fr; St stays a main effect
+m17 <- lm(skewness ~ Re * Fr + St, data = data)
+
+ # Interaction between log(St) and Re
+m18 <- lm(skewness ~ log(St) * Re + Fr, data = data)
+
+# Interaction between log(St) and Fr
+m19 <- lm(skewness ~ log(St) * Fr + Re, data = data)
+
+# Interaction between Re and Fr
+m20 <- lm(skewness ~ Re * Fr + log(St), data = data)
+
+# Interaction between St and Re
+m21 <- lm(log(skewness) ~ St * Re + Fr, data = data)
+
+# Interaction between St and Fr
+m22 <- lm(log(skewness) ~ St * Fr + Re, data = data)
+
+# Interaction between Re and Fr
+m23 <- lm(log(skewness) ~ Re * Fr + St, data = data)
+
+# Interaction between log(St) and Re
+m24 <- lm(log(skewness) ~ log(St) * Re + Fr, data = data)
+
+# Interaction between log(St) and Fr
+m25 <- lm(log(skewness) ~ log(St) * Fr + Re, data = data)
+
+# Interaction between Re and Fr
+m26 <- lm(log(skewness) ~ Re * Fr + log(St), data = data)
+```
 
 
+```{r}
+models <- list(
+  m1 = m1, m2 = m2, m3 = m3, m4 = m4,
+  m5 = m5, m6 = m6, m7 = m7, m8 = m8,
+  m9 = m9, m10 = m10, m11 = m11, m12 = m12,
+  m15 = m15, m16 = m16, m17 = m17,
+  m18 = m18, m19 = m19, m20 = m20,
+  m21 = m21, m22 = m22, m23 = m23,
+  m24 = m24, m25 = m25, m26 = m26
+)
+
+# Keep complete observations used by all models
+# This assumes St is numeric and Re and Fr are factors
+dat <- data[
+  complete.cases(data[, c("skewness", "St", "Re", "Fr")]) &
+    is.finite(data$skewness) &
+    is.finite(data$St),
+]
+
+# Make sure log-response models are mathematically valid
+if (any(dat$skewness <= 0)) {
+  stop("log(skewness) models require all skewness values > 0.")
+}
+
+# LOOCV function
+run_loocv <- function(model, dat) {
+
+  n <- nrow(dat)
+  predictions <- numeric(n)
+
+  # Is the response log-transformed?
+  lhs <- paste(deparse(formula(model)[[2]]), collapse = "")
+  log_response <- grepl(
+    "^log\\s*\\(\\s*skewness\\s*\\)$", lhs
+  )
+
+  for (i in seq_len(n)) {
+
+    train <- dat[-i, , drop = FALSE]
+    test  <- dat[i, , drop = FALSE]
+
+    # Refit using all observations except the held-out row
+    fit <- lm(
+      formula(model),
+      data = train,
+      na.action = na.exclude
+    )
+
+    pred <- as.numeric(predict(fit, newdata = test))
+
+    if (log_response) {
+      # Smearing correction for back-transforming log predictions
+      smear <- mean(exp(residuals(fit)), na.rm = TRUE)
+      pred <- exp(pred) * smear
+    }
+
+    predictions[i] <- pred
+  }
+
+  actual <- dat$skewness
+  errors <- actual - predictions
+
+  data.frame(
+    RMSE = sqrt(mean(errors^2)),
+    MAE = mean(abs(errors))
+  )
+}
+
+# Evaluate every model
+cv_results <- do.call(
+  rbind,
+  lapply(models, function(m) run_loocv(m, dat))
+)
+
+cv_results$model <- rownames(cv_results)
+rownames(cv_results) <- NULL
+
+# Put model name first
+cv_results <- cv_results[, c("model", "RMSE", "MAE")]
+
+# Sort by lowest RMSE
+cv_results <- cv_results[order(cv_results$RMSE), ]
+
+print(cv_results)
+```
+
+
+```{r}
+
+# RMSE comparison
+barplot(
+  cv_results$RMSE,
+  names.arg = cv_results$model,
+  las = 2,
+  cex.names = 0.7,
+  main = "LOOCV RMSE by Model",
+  ylab = "RMSE"
+)
+
+# MAE comparison
+barplot(
+  cv_results$MAE,
+  names.arg = cv_results$model,
+  las = 2,
+  cex.names = 0.7,
+  main = "LOOCV MAE by Model",
+  ylab = "MAE"
+)
+
+```
+```{r}
+
+# Save diagnostic plots for every model to one PDF
+pdf("model_diagnostics.pdf", width = 10, height = 8)
+
+for (model_name in names(models)) {
+
+  model <- models[[model_name]]
+
+  # Four standard diagnostic plots:
+  # 1. Residuals vs Fitted
+  # 2. Normal Q-Q
+  # 3. Scale-Location
+  # 4. Residuals vs Leverage
+  par(mfrow = c(2, 2))
+
+  plot(
+    model,
+    which = 1:4,
+    main = model_name
+  )
+}
+
+dev.off()
+```
+
+## consistency w rest of group - just start w log transform
+
+```{r}
+# Model 1: Linear main effects (kept as requested)
+m1 <- lm(skewness ~ St + Re + Fr, data = data)
+
+# Model 2: Both logs, no interactions
+m2_2 <- lm(log(skewness) ~ log(St) + Re + Fr, data = data)
+
+# Model 3: Both logs + all pairwise interactions
+m3_2 <- lm(log(skewness) ~ log(St) * Re +
+                           log(St) * Fr +
+                           Re * Fr,
+           data = data)
+
+# Model 4: Both logs + all interactions, including three-way
+m4_2 <- lm(log(skewness) ~ log(St) * Re * Fr,
+           data = data)
+
+# Model 5: Both logs + interaction between log(St) and Re
+m5_2 <- lm(log(skewness) ~ log(St) * Re + Fr, data = data)
+
+# Model 6: Both logs + interaction between log(St) and Fr
+m6_2 <- lm(log(skewness) ~ log(St) * Fr + Re, data = data)
+
+# Model 7: Both logs + interaction between Re and Fr
+m7_2 <- lm(log(skewness) ~ Re * Fr + log(St), data = data)
+```
+
+```{r}
+models <- list(
+  m1 = m1, m2_2 = m2_2, m3_2 = m3_2, m4_2 = m4_2,
+  m5_2 = m5_2, m6_2 = m6_2, m7_2 = m7_2
+)
+
+# Keep complete observations used by all models
+# This assumes St is numeric and Re and Fr are factors
+dat <- data[
+  complete.cases(data[, c("skewness", "St", "Re", "Fr")]) &
+    is.finite(data$skewness) &
+    is.finite(data$St),
+]
+
+# Make sure log-response models are mathematically valid
+if (any(dat$skewness <= 0)) {
+  stop("log(skewness) models require all skewness values > 0.")
+}
+
+# LOOCV function
+run_loocv <- function(model, dat) {
+
+  n <- nrow(dat)
+  predictions <- numeric(n)
+
+  # Is the response log-transformed?
+  lhs <- paste(deparse(formula(model)[[2]]), collapse = "")
+  log_response <- grepl(
+    "^log\\s*\\(\\s*skewness\\s*\\)$", lhs
+  )
+
+  for (i in seq_len(n)) {
+
+    train <- dat[-i, , drop = FALSE]
+    test  <- dat[i, , drop = FALSE]
+
+    # Refit using all observations except the held-out row
+    fit <- lm(
+      formula(model),
+      data = train,
+      na.action = na.exclude
+    )
+
+    pred <- as.numeric(predict(fit, newdata = test))
+
+    if (log_response) {
+      # Smearing correction for back-transforming log predictions
+      smear <- mean(exp(residuals(fit)), na.rm = TRUE)
+      pred <- exp(pred) * smear
+    }
+
+    predictions[i] <- pred
+  }
+
+  actual <- dat$skewness
+  errors <- actual - predictions
+
+  data.frame(
+    RMSE = sqrt(mean(errors^2)),
+    MAE = mean(abs(errors))
+  )
+}
+
+# Evaluate every model
+cv_results <- do.call(
+  rbind,
+  lapply(models, function(m) run_loocv(m, dat))
+)
+
+cv_results$model <- rownames(cv_results)
+rownames(cv_results) <- NULL
+
+# Put model name first
+cv_results <- cv_results[, c("model", "RMSE", "MAE")]
+
+# Sort by lowest RMSE
+cv_results <- cv_results[order(cv_results$RMSE), ]
+
+print(cv_results)
+```
+
+```{r}
+# RMSE comparison
+barplot(
+  cv_results$RMSE,
+  names.arg = cv_results$model,
+  las = 2,
+  cex.names = 0.7,
+  main = "LOOCV RMSE by Model",
+  ylab = "RMSE"
+)
+
+# MAE comparison
+barplot(
+  cv_results$MAE,
+  names.arg = cv_results$model,
+  las = 2,
+  cex.names = 0.7,
+  main = "LOOCV MAE by Model",
+  ylab = "MAE"
+)
+```
+```{r}
+for (model_name in names(models)) {
+
+  model <- models[[model_name]]
+
+  # Four standard diagnostic plots:
+  # 1. Residuals vs Fitted
+  # 2. Normal Q-Q
+  # 3. Scale-Location
+  # 4. Residuals vs Leverage
+  par(mfrow = c(2, 2))
+
+  plot(
+    model,
+    which = c(1, 2, 3, 5),
+    main = model_name
+  )
+}
+```
+```{r}
+mf <- model.frame(m7_2)
+
+diagnostics <- data.frame(
+  row_label = rownames(mf),
+  mf,
+  fitted = fitted(m7_2),
+  residual = residuals(m7_2),
+  standardized_residual = rstandard(m7_2),
+  leverage = hatvalues(m7_2),
+  cooks_distance = cooks.distance(m7_2),
+  check.names = FALSE
+)
+
+# Inspect the most influential observations
+head(
+  diagnostics[order(diagnostics$cooks_distance, decreasing = TRUE), ],
+  6
+)
+```
+```{r}
+model_metrics <- data.frame(
+  Model = "m7_2",
+  R_squared = summary(m7_2)$r.squared,
+  Adjusted_R_squared = summary(m7_2)$adj.r.squared,
+  AIC = AIC(m7_2),
+  BIC = BIC(m7_2)
+)
+
+print(model_metrics)
+```
+```{r}
+evaluate_model <- function(model, model_name = deparse(substitute(model))) {
+  model_summary <- summary(model)
+
+  data.frame(
+    Model = model_name,
+    R_squared = model_summary$r.squared,
+    Adjusted_R_squared = model_summary$adj.r.squared,
+    AIC = AIC(model),
+    BIC = BIC(model)
+  )
+}
+```
+
+```{r}
+models <- list(
+  m1 = m1, m2_2 = m2_2, m3_2 = m3_2, m4_2 = m4_2,
+  m5_2 = m5_2, m6_2 = m6_2, m7_2 = m7_2
+)
+
+
+model_comparison <- do.call(
+  rbind,
+  lapply(names(models), function(name) {
+    evaluate_model(models[[name]], name)
+  })
+)
+
+print(model_comparison)
+```
+
+based on everything, we could either do m4_2 or m7_2. RMSE/MAE/BIC are lower for m7_2 but AIC/adj R^2 are better for m7_2. 
