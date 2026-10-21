@@ -93,13 +93,18 @@ plot(knn_loocv)
 ```{r}
 #fit variance
 
-knn_variance_loocv <- caret::train(
-  C_moment_2 ~ St + Re + inverse_Fr, data = log_train, method = "knn",
-  preProcess = c("center", "scale"), #scales and centers
-  trControl  = trainControl(method = "LOOCV"),
-  tuneGrid   = data.frame(k = seq(1, 25, 2))      # CV picks k
-)
+
 ```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+`{<- caret::train(}   C_moment_2 ~ St + Re + inverse_Fr, data = log_train, method = "knn",   preProcess = c("center", "scale"), #scales and centers   trControl  = trainControl(method = "LOOCV"),   tuneGrid   = data.frame(k = seq(1, 25, 2))      # CV picks k )`
 
 ```{r}
 
@@ -118,4 +123,152 @@ knn_kurtosis_loocv <- caret::train(
   trControl  = trainControl(method = "LOOCV"),
   tuneGrid   = data.frame(k = seq(1, 25, 2))      # CV picks k
 )
+```
+
+```{r}
+#exploring the world of linear models for kurtosis 
+
+#make categoricals
+train <- train |>
+  mutate(
+    Fr = as.factor(Fr),
+    Re = as.factor(Re)
+  )
+
+#fit with log(St)
+kurtosis.fit.log <- glm(kurtosis ~ log(St) + Re + Fr, family = gaussian, data = train)
+summary(kurtosis.fit.log)
+plot(kurtosis.fit.log) #30, 34, 82 have pull
+
+m1 <- lm(kurtosis ~ log(St) + Re + Fr,   data = train)   #  6 coefficients (additive)
+m1.5 <- lm(kurtosis ~ log(St) + Re * Fr,   data = train) 
+m1.75 <- lm(kurtosis ~ log(St) * Re + Fr,   data = train) 
+m1.25 <- lm(kurtosis ~ log(St) * Fr + Re ,   data = train) 
+m2 <- lm(kurtosis ~ (log(St) + Re + Fr)^2, data = train) # 14 coefficients
+m3 <- lm(kurtosis ~ log(St) * Re * Fr,   data = train)   # 18 coefficients (full)
+
+anova(m1, m2, m3); AIC(m1, m2, m3); BIC(m1, m2, m3)
+BIC(log_m1, log_m2, log_m3)
+AIC(m1, m2, m3, m1.5,m1.75,m1.25)
+BIC(m1, m2, m3, m1.5,m1.75,m1.25)
+summary(m1)
+summary(m2)
+summary(m3)
+loo_rmse(m1)
+loo_rmse(m1.25)
+loo_rmse(m1.5)
+loo_rmse(m1.75)
+loo_rmse(m2)
+loo_rmse(m3)
+
+plot(m2) #30, 79, 82 have pull
+
+#fit with log(kurtosis) and log(St)
+log_m1 <- lm(log(kurtosis) ~ log(St) + Re + Fr,   data = train) 
+log_m1.5 <- lm(log(kurtosis) ~ log(St) + Re * Fr,   data = train) 
+log_m1.75 <- lm(log(kurtosis) ~ log(St) * Re + Fr,   data = train) 
+log_m1.25 <- lm(log(kurtosis) ~ log(St) * Fr + Re ,   data = train) 
+log_m2 <- lm(log(kurtosis) ~ (log(St) + Re + Fr)^2, data = train)
+log_m3 <- lm(log(kurtosis) ~ log(St) * Re * Fr,   data = train)  
+
+AIC(log_m1, log_m2, log_m3) 
+BIC(log_m1, log_m2, log_m3)
+AIC(log_m1, log_m1.5, log_m1.25, log_m1.75, log_m2) #1.5 has aic of 87
+
+loo_rmse <- function(m) sqrt(mean((resid(m) / (1 - hatvalues(m)))^2))
+
+loo_rmse(log_m1)
+loo_rmse(log_m1.25)
+loo_rmse(log_m1.5)
+loo_rmse(log_m1.75)
+loo_rmse(log_m2)
+loo_rmse(log_m3)
+
+anova(log_m2)
+plot(log_m2)
+
+AIC(log_m1.5, log_m3)
+
+#smallest rmse with loocv
+plot(log_m1.5)
+
+```
+
+```{r}
+# ============================================================
+# Sensitivity of log_m1.5 to row 82
+# Assumes `train`, `log_m1.5`, and loo_rmse() already exist.
+# ============================================================
+library(tidyverse)
+library(emmeans)
+
+# ---- 0. Find the row ------------------------------------------
+# The plot labels are ROW NAMES, which match row numbers only if `train`
+# was never filtered or reordered. Check:
+idx <- which(rownames(train) == "82")
+idx
+train[idx, c("St", "Re", "Fr", "kurtosis")]
+
+# Which cell is it in, and how many rows does that cell have?
+table(train$Re, train$Fr)            # find the cell of row 82 in this table
+log(train$kurtosis[idx])             # observed
+fitted(log_m1.5)[idx]                # predicted (observed is far below it)
+
+# ---- 1. Refit without it --------------------------------------
+train_no82 <- train[-idx, ]
+log_m1.5_d <- update(log_m1.5, data = train_no82)
+
+# ---- 2. Compare coefficients side by side ---------------------------
+ci_full <- confint(log_m1.5)
+ci_drop <- confint(log_m1.5_d)
+
+comparison <- tibble(
+  term       = names(coef(log_m1.5)),
+  full       = coef(log_m1.5),
+  dropped    = coef(log_m1.5_d)[names(coef(log_m1.5))],
+  change     = dropped - full,
+  se_full    = summary(log_m1.5)$coefficients[, "Std. Error"][names(coef(log_m1.5))],
+  change_in_se = change / se_full,                      # change in units of its own standard error
+  ci_full    = sprintf("[%.2f, %.2f]", ci_full[, 1], ci_full[, 2]),
+  ci_dropped = sprintf("[%.2f, %.2f]", ci_drop[names(coef(log_m1.5)), 1],
+                                       ci_drop[names(coef(log_m1.5)), 2])
+)
+print(comparison, width = Inf)
+# Rule of thumb: |change_in_se| under ~0.5 is negligible; over ~1 is notable.
+
+# ---- 3. The headline quantity: the St slope -------------------
+b_full <- coef(log_m1.5)["log(St)"]
+b_drop <- coef(log_m1.5_d)["log(St)"]
+c(full = 2^b_full, dropped = 2^b_drop)     # factor change in kurtosis per doubling of St
+
+# ---- 4. Cell baselines (fitted level at a typical St) ---------
+typ <- median(log(train$St))
+emm_full <- summary(emmeans(log_m1.5,   ~ Re * Fr, at = list(St = exp(typ))))
+emm_drop <- summary(emmeans(log_m1.5_d, ~ Re * Fr, at = list(St = exp(typ))))
+bind_cols(emm_full[, c("Re", "Fr", "emmean")],
+          dropped = emm_drop$emmean) %>%
+  mutate(diff = dropped - emmean, ratio_on_raw_scale = exp(diff))
+
+# ---- 5. Fit quality and prediction error ----------------------
+tibble(
+  model = c("with row 82", "without row 82"),
+  resid_sd = c(sigma(log_m1.5), sigma(log_m1.5_d)),
+  loocv_rmse = c(loo_rmse(log_m1.5), loo_rmse(log_m1.5_d)),
+  adj_r2 = c(summary(log_m1.5)$adj.r.squared, summary(log_m1.5_d)$adj.r.squared)
+)
+# The LOOCV values are on different row sets, so treat the comparison as
+# "how much of the error was this one point", not as a model contest.
+
+# ---- 6. Built-in influence measures (no refitting) ------------
+dfb <- dfbetas(log_m1.5)[idx, ]            # standardised change in each coefficient
+round(dfb, 2)                              # |value| > 2/sqrt(n) (~0.21) is notable
+cooks.distance(log_m1.5)[idx]              # > 4/n (~0.045) worth checking
+hatvalues(log_m1.5)[idx]                   # leverage
+rstudent(log_m1.5)[idx]                    # studentised residual: |value| > 3 is an outlier
+
+# ---- 7. Does the model choice change? -------------------------
+# Does m1.5 still beat m2 once row 82 is gone?
+log_m2_d <- update(log_m2, data = train_no82)
+c(m1.5 = loo_rmse(log_m1.5_d), m2 = loo_rmse(log_m2_d))
+anova(log_m1.5_d, log_m2_d)
 ```
