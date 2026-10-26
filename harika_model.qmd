@@ -40,20 +40,41 @@ data <- data |>
     ex_kurt  = kurtosis - 3                               # excess kurtosis
   )
 
-#using a categorical to address infinity
-data <- data |>
-  mutate(
-    Fr = as.factor(Fr),
-    Re = as.factor(Re)
-  )
 ```
 
 ```{r}
-#| label: eda
+#| label: eda-mean
 
-plot(data_train$St)
-plot(log(data_train$St))
+ggplot(data, aes(x = log(St), y = m1)) + geom_point()
+ggplot(data, aes(x = Re, y = m1)) + geom_point()
+ggplot(data, aes(x = plogis(Fr), y = m1)) + geom_point()
+```
 
+```{r}
+#| label: eda-sd
+
+ggplot(data, aes(x = log(St), y = sd_R)) + geom_point()
+ggplot(data, aes(x = Re, y = sd_R)) + geom_point()
+ggplot(data, aes(x = plogis(Fr), y = sd_R)) + geom_point()
+
+```
+
+```{r}
+#| label: eda-skewness
+
+ggplot(data, aes(x = log(St), y = skewness)) + geom_point()
+ggplot(data, aes(x = Re, y = skewness)) + geom_point()
+ggplot(data, aes(x = plogis(Fr), y = skewness)) + geom_point()
+  
+```
+
+```{r}
+#| label: eda-kurtosis
+
+ggplot(data, aes(x = St, y = kurtosis)) + geom_point()
+ggplot(data, aes(x = log(St), y = kurtosis)) + geom_point()
+ggplot(data, aes(x = Re, y = kurtosis)) + geom_point()
+ggplot(data, aes(x = plogis(Fr), y = kurtosis)) + geom_point()
 ```
 
 ```{r}
@@ -95,7 +116,6 @@ cv.err.skewness.log <- cv.glm(data, skewness.fit.log)
 cv.err.kurtosis <- cv.glm(data, kurtosis.fit)
 cv.err.kurtosis.log <- cv.glm(data, kurtosis.fit.log)
 ```
-
 
 ```{r}
 #| label: results
