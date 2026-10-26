@@ -1,28 +1,53 @@
 ---
-title: "SD model - Claire"
+title: "SD Model"
 format: pdf
 editor: visual
 execute:
+  echo: false
   message: false
+  error: false
 ---
 
-```{r}
-library(tidyverse)
+## Data preparation
 
-train <- read_csv("data-train.csv") |>
-  mutate(
-    C_moment_2 = R_moment_2 - R_moment_1^2,
-    sd_R = sqrt(C_moment_2),
-    Re = factor(Re),
-    Fr = factor(Fr)
-  )
-stopifnot(all(is.finite(train$sd_R)), all(train$sd_R > 0),
-          all(train$St > 0))
+```{r}
+#| label: prepare-data
+#| include: false
+library(tidyverse)
+library(glmnet)
+
+numeric_train <- read_csv("data-train.csv", show_col_types = FALSE) |>
+  mutate(C_moment_2 = R_moment_2 - R_moment_1^2,
+         sd_R = sqrt(C_moment_2), Fr_invlogit = plogis(Fr))
+stopifnot(all(is.finite(numeric_train$sd_R)), all(numeric_train$sd_R > 0),
+          all(numeric_train$St > 0), all(is.finite(numeric_train$Fr_invlogit)))
+train <- numeric_train |> mutate(Re = factor(Re), Fr = factor(Fr))
 ```
 
-## Explore SD and St
+The training data contain `r nrow(numeric_train)` observations, three Re levels
+and three Fr levels. The combination Re = 398, Fr = 0.3 is absent.
+
+## EDA: motivate transformations and flexible relationships
 
 ```{r}
+#| label: fig-sd-inputs
+#| fig-width: 8
+#| fig-height: 3
+#| fig-cap: "SD across the inputs. Only three Re and Fr levels are observed; curvature between these levels is model-imposed."
+eda_data <- numeric_train |>
+  mutate(Re_level = factor(Re), Fr_level = factor(Fr))
+eda_relationships <- eda_data |>
+  select(sd_R, St, Re, Fr_invlogit, Fr_level) |>
+  pivot_longer(c(St, Re, Fr_invlogit), names_to = "input", values_to = "value")
+ggplot(eda_relationships, aes(value, sd_R, color = Fr_level)) +
+  geom_point(alpha = 0.8) + facet_wrap(~ input, scales = "free_x") +
+  scale_y_log10() + labs(x = "Input value", y = "SD (log scale)", color = "Fr") +
+  theme_minimal()
+```
+
+```{r}
+#| label: fig-transformations
+#| fig-cap: "Original and log scales for SD and St, used to assess transformation candidates."
 #| fig-width: 8
 #| fig-height: 6
 par(mfrow = c(2, 2))
@@ -33,10 +58,11 @@ hist(log(train$St), main = "Log St", xlab = "log(St)")
 par(mfrow = c(1, 1))
 ```
 
-## Compare log transformations using LOOCV
-
+## Candidate models and validation
 
 ```{r}
+#| label: categorical-log-search
+#| include: false
 log_formulas <- list(
   no_logs = sd_R ~ St + Re + Fr,
   log_SD = log(sd_R) ~ St + Re + Fr,
@@ -73,28 +99,14 @@ log_comparison <- imap_dfr(log_evaluations, function(result, name) {
          negative_predictions = result$negative_predictions)
 }) |>
   arrange(RMSE)
-knitr::kable(log_comparison, digits = 4)
 
 best_log_name <- log_comparison$model[1]
 best_additive <- log_evaluations[[best_log_name]]$fit
-best_log_name
 ```
 
-## Diagnostics for the best additive model
-
 ```{r}
-#| fig-width: 8
-#| fig-height: 7
-summary(best_additive)
-par(mfrow = c(2, 2))
-plot(best_additive)
-par(mfrow = c(1, 1))
-```
-
-## Compare interaction effects
-
-
-```{r}
+#| label: categorical-interaction-search
+#| include: false
 # Build the interaction formulas using the selected log combination.
 y_term <- if (best_log_name %in% c("log_SD", "log_both")) "log(sd_R)" else "sd_R"
 x_term <- if (best_log_name %in% c("log_St", "log_both")) "log(St)" else "St"
@@ -117,60 +129,379 @@ interaction_comparison <- imap_dfr(interaction_evaluations, function(result, nam
          negative_predictions = result$negative_predictions)
 }) |>
   arrange(RMSE)
-knitr::kable(interaction_comparison, digits = 4)
 
 best_interaction_name <- interaction_comparison$model[1]
 final_sd <- interaction_evaluations[[best_interaction_name]]$fit
 final_sd_predictions <- interaction_evaluations[[best_interaction_name]]$predictions
-formula(final_sd)
 ```
 
-
-## Final-model summary and diagnostics
+```{r}
+#| label: numeric-log-search
+#| include: false
+numeric_log_formulas <- list(
+  no_logs = sd_R ~ St + Re + Fr_invlogit,
+  log_SD = log(sd_R) ~ St + Re + Fr_invlogit,
+  log_St = sd_R ~ log(St) + Re + Fr_invlogit,
+  log_both = log(sd_R) ~ log(St) + Re + Fr_invlogit
+)
+numeric_log_evaluations <- lapply(numeric_log_formulas, evaluate_sd,
+                                   data = numeric_train)
+numeric_log_comparison <- imap_dfr(numeric_log_evaluations, function(result, name) {
+  tibble(model = name, RMSE = result$RMSE, MAE = result$MAE,
+         negative_predictions = result$negative_predictions)
+}) |>
+  arrange(RMSE)
+numeric_best_log <- numeric_log_comparison$model[1]
+```
 
 ```{r}
+#| label: numeric-interaction-search
+#| include: false
+numeric_y <- if (numeric_best_log %in% c("log_SD", "log_both")) "log(sd_R)" else "sd_R"
+numeric_x <- if (numeric_best_log %in% c("log_St", "log_both")) "log(St)" else "St"
+numeric_rhs <- c(
+  additive = paste(numeric_x, "+ Re + Fr_invlogit"),
+  Re_Fr = paste(numeric_x, "+ Re * Fr_invlogit"),
+  St_Re = paste(numeric_x, "* Re + Fr_invlogit"),
+  St_Fr = paste(numeric_x, "* Fr_invlogit + Re"),
+  pairwise = paste0("(", numeric_x, " + Re + Fr_invlogit)^2"),
+  threeway = paste(numeric_x, "* Re * Fr_invlogit")
+)
+numeric_interaction_formulas <- lapply(numeric_rhs, function(rhs) {
+  as.formula(paste(numeric_y, "~", rhs))
+})
+numeric_interaction_evaluations <- lapply(numeric_interaction_formulas,
+                                         evaluate_sd, data = numeric_train)
+numeric_interaction_comparison <- imap_dfr(numeric_interaction_evaluations,
+                                           function(result, name) {
+  tibble(model = name, RMSE = result$RMSE, MAE = result$MAE,
+         parameters = result$fit$rank, AIC = AIC(result$fit), BIC = BIC(result$fit),
+         negative_predictions = result$negative_predictions)
+}) |>
+  arrange(RMSE)
+numeric_best_name <- numeric_interaction_comparison$model[1]
+numeric_best_result <- numeric_interaction_evaluations[[numeric_best_name]]
+final_sd_numeric <- numeric_best_result$fit
+```
+
+```{r}
+#| label: benchmark
+#| include: false
+benchmark_result <- interaction_evaluations[[best_interaction_name]]
+```
+
+```{r}
+#| label: model-functions
+#| include: false
+bc_transform <- function(y, lambda) {
+  if (abs(lambda) < 1e-6) log(y) else expm1(lambda * log(y)) / lambda
+}
+
+sd_design <- function(data, rich = FALSE) {
+  # Scaling Re by 100 changes units, not the available polynomial relationships.
+  x <- cbind(log_St = log(data$St), Re_100 = data$Re / 100,
+             Fr_invlogit = data$Fr_invlogit)
+  if (rich) x <- cbind(x, log_St_sq = x[, 1]^2, Re_sq = x[, 2]^2,
+                       Fr_sq = x[, 3]^2, St_Re = x[, 1]*x[, 2],
+                       St_Fr = x[, 1]*x[, 3], Re_Fr = x[, 2]*x[, 3])
+  else x <- cbind(x, Re_Fr = x[, 2]*x[, 3])
+  x
+}
+
+estimate_bc_lambda <- function(y, x) {
+  # Profile Gaussian log-likelihood, including the Box-Cox Jacobian.
+  q <- qr(cbind(Intercept = 1, x))
+  objective <- function(lambda) {
+    rss <- sum(qr.resid(q, bc_transform(y, lambda))^2)
+    length(y)/2 * log(rss/length(y)) - (lambda - 1)*sum(log(y))
+  }
+  optimize(objective, interval = c(-2, 2), tol = 1e-4)$minimum
+}
+
+# Tune the penalty relative to the training sample's maximum lambda.
+penalty_ratios <- 10^seq(0, -4, length.out = 25)
+
+fit_sd_pipeline <- function(data, method) {
+  rich <- method %in% c("Log + LASSO", "Box-Cox + LASSO", "Rich log linear", "Rich Box-Cox linear")
+  penalized <- method %in% c("Log + LASSO", "Box-Cox + LASSO")
+  x <- sd_design(data, rich)
+  lambda_bc <- if (grepl("Box-Cox", method, fixed = TRUE))
+    estimate_bc_lambda(data$sd_R, x) else 0
+  z <- bc_transform(data$sd_R, lambda_bc)
+  if (penalized) {
+    # Preserve main effects; penalize squares and pairwise interactions.
+    penalties <- c(0, 0, 0, rep(1, ncol(x) - 3))
+    initial <- glmnet(x, z, alpha = 1, penalty.factor = penalties,
+                      standardize = TRUE)
+    lambdas <- max(initial$lambda) * penalty_ratios
+    fit <- glmnet(x, z, alpha = 1, lambda = lambdas,
+                  penalty.factor = penalties, standardize = TRUE)
+    fitted_z <- as.matrix(predict(fit, newx = x, s = lambdas))
+  } else {
+    fit <- lm.fit(cbind(Intercept = 1, x), z)
+    stopifnot(all(is.finite(fit$coefficients)))
+    fitted_z <- matrix(cbind(1, x) %*% fit$coefficients, ncol = 1)
+    lambdas <- NA_real_
+  }
+  list(fit = fit, lambda_bc = lambda_bc, lambdas = lambdas,
+       residuals = z - fitted_z, rich = rich, penalized = penalized)
+}
+
+predict_sd_pipeline <- function(object, newdata) {
+  x <- sd_design(newdata, object$rich)
+  eta <- if (object$penalized)
+    as.matrix(predict(object$fit, newx = x, s = object$lambdas)) else
+    matrix(cbind(1, x) %*% object$fit$coefficients, ncol = 1)
+  out <- matrix(NA_real_, nrow(eta), ncol(eta))
+  for (j in seq_len(ncol(eta))) {
+    # Generalized empirical smearing: average inverse-transformed residual shifts.
+    shifted <- outer(eta[, j], object$residuals[, j], "+")
+    lambda <- object$lambda_bc
+    if (abs(lambda) < 1e-6) out[, j] <- rowMeans(exp(shifted)) else {
+      base <- 1 + lambda * shifted
+      valid <- rowSums(base <= 0) == 0
+      if (any(valid)) out[valid, j] <- rowMeans(
+        exp(log(base[valid, , drop = FALSE])/lambda))
+    }
+  }
+  out[!is.finite(out)] <- NA_real_
+  out
+}
+
+choose_penalty <- function(data, method, seed) {
+  set.seed(seed)
+  folds <- sample(rep(1:5, length.out = nrow(data)))
+  inner_predictions <- matrix(NA_real_, nrow(data), length(penalty_ratios))
+  for (fold in 1:5) {
+    assessment <- which(folds == fold)
+    fit <- fit_sd_pipeline(data[-assessment, ], method)
+    inner_predictions[assessment, ] <- predict_sd_pipeline(fit, data[assessment, ])
+  }
+  errors <- sqrt(colMeans((data$sd_R - inner_predictions)^2))
+  errors[!is.finite(errors)] <- Inf
+  if (all(is.infinite(errors))) return(NA_integer_)
+  which.min(errors)
+}
+```
+
+```{r}
+#| label: validate-candidates
+#| include: false
+pipeline_methods <- c("Continuous log baseline", "Box-Cox linear",
+                      "Rich log linear", "Rich Box-Cox linear", "Log + LASSO", "Box-Cox + LASSO")
+pipeline_predictions <- matrix(NA_real_, nrow(numeric_train), length(pipeline_methods),
+                                dimnames = list(NULL, pipeline_methods))
+pipeline_choices <- list()
+for (method in pipeline_methods) {
+  message("Evaluating: ", method)
+  for (i in seq_len(nrow(numeric_train))) {
+    analysis_data <- numeric_train[-i, ]
+    fit <- fit_sd_pipeline(analysis_data, method)
+    choice <- if (fit$penalized) choose_penalty(analysis_data, method, 2026 + i) else 1L
+    pred <- if (is.na(choice)) NA_real_ else
+      predict_sd_pipeline(fit, numeric_train[i, , drop = FALSE])[1, choice]
+    pipeline_predictions[i, method] <- pred
+    pipeline_choices[[length(pipeline_choices) + 1]] <- tibble(
+      model = method, omitted_row = i, BoxCox_lambda = fit$lambda_bc,
+      penalty_ratio = if (fit$penalized && !is.na(choice)) penalty_ratios[choice] else NA_real_
+    )
+  }
+}
+pipeline_choices <- bind_rows(pipeline_choices)
+pipeline_comparison <- map_dfr(pipeline_methods, function(method) {
+  p <- pipeline_predictions[, method]
+  valid <- all(is.finite(p))
+  tibble(model = method,
+         RMSE = if (valid) sqrt(mean((numeric_train$sd_R - p)^2)) else NA_real_,
+         MAE = if (valid) mean(abs(numeric_train$sd_R - p)) else NA_real_,
+         invalid_predictions = sum(!is.finite(p)),
+         negative_predictions = sum(p < 0, na.rm = TRUE))
+}) |>
+  arrange(RMSE)
+
+# The original categorical benchmark remains a reference, not a continuous surrogate.
+pipeline_with_benchmark <- bind_rows(
+  tibble(model = "Categorical benchmark", RMSE = benchmark_result$RMSE,
+         MAE = benchmark_result$MAE, invalid_predictions = 0L,
+         negative_predictions = benchmark_result$negative_predictions),
+  pipeline_comparison
+) |>
+  arrange(RMSE)
+```
+
+```{r}
+#| label: refit-selected-model
+#| include: false
+best_pipeline_name <- pipeline_comparison |>
+  filter(is.finite(RMSE), invalid_predictions == 0, negative_predictions == 0) |>
+  slice_min(RMSE, n = 1, with_ties = FALSE) |>
+  pull(model)
+final_sd_pipeline <- fit_sd_pipeline(numeric_train, best_pipeline_name)
+final_penalty_choice <- if (final_sd_pipeline$penalized)
+  choose_penalty(numeric_train, best_pipeline_name, 325) else 1L
+
+if (final_sd_pipeline$penalized) {
+  selected_coefficients <- as.matrix(coef(final_sd_pipeline$fit,
+    s = final_sd_pipeline$lambdas[final_penalty_choice]))
+  selected_coefficients <- tibble(term = rownames(selected_coefficients),
+                                   estimate = selected_coefficients[, 1])
+} else {
+  selected_coefficients <- tibble(term = names(final_sd_pipeline$fit$coefficients),
+                                   estimate = final_sd_pipeline$fit$coefficients)
+}
+```
+
+## Compare predictive performance
+
+```{r}
+#| label: tbl-model-comparison
+model_labels <- c(
+  "Categorical benchmark" = "Categorical log model: Re-Fr interaction",
+  "Continuous log baseline" = "Continuous log model: Re-Fr interaction",
+  "Box-Cox linear" = "Continuous Box-Cox: Re-Fr interaction",
+  "Rich log linear" = "Second-order log model",
+  "Rich Box-Cox linear" = "Second-order Box-Cox model",
+  "Log + LASSO" = "Second-order log + LASSO",
+  "Box-Cox + LASSO" = "Second-order Box-Cox + LASSO")
+pipeline_with_benchmark |>
+  transmute(Model = unname(model_labels[model]), RMSE, MAE) |>
+  knitr::kable(digits = 2, caption = "LOOCV prediction errors on the original SD scale (lower is better).")
+stopifnot(all(pipeline_comparison$invalid_predictions == 0),
+          all(pipeline_comparison$negative_predictions == 0))
+```
+
+The lowest observed LOOCV RMSE is from the **`r unname(model_labels[best_pipeline_name])`**
+(RMSE `r sprintf("%.2f", min(pipeline_comparison$RMSE))`,
+MAE `r sprintf("%.2f", pipeline_comparison$MAE[match(best_pipeline_name, pipeline_comparison$model)])`).
+Box–Cox alone does not improve the simple continuous model. Adding curvature
+and interactions together with Box–Cox produces the strongest candidate;
+LASSO does not improve on the corresponding unpenalized second-order models.
+All continuous candidates produced finite, positive LOOCV predictions.
+
+## Selected model and interpretation
+
+For $x=\log(St)$, $r=Re/100$ and $g=\operatorname{plogis}(Fr)$, the selected model is
+
+$$
+\frac{\mathrm{SD}^{\lambda}-1}{\lambda}
+=\beta_0+\beta_1x+\beta_2r+\beta_3g
++\beta_4x^2+\beta_5r^2+\beta_6g^2
++\beta_7xr+\beta_8xg+\beta_9rg+\varepsilon.
+$$
+
+This is a second-order polynomial regression with a Box–Cox-transformed response.
+The full-data estimate is $\hat\lambda=$ `r sprintf("%.3f", final_sd_pipeline$lambda_bc)`.
+
+```{r}
+#| label: tbl-selected-coefficients
+selected_coefficients |>
+  mutate(term = recode(term, Intercept = "Intercept", log_St = "x", Re_100 = "r",
+                       Fr_invlogit = "g", log_St_sq = "x^2", Re_sq = "r^2",
+                       Fr_sq = "g^2", St_Re = "x*r", St_Fr = "x*g", Re_Fr = "r*g")) |>
+  knitr::kable(digits = 3, col.names = c("Term", "Estimate"),
+               caption = "Selected model coefficients, fitted to all training observations.")
+```
+
+With squares and interactions, an input's effect depends on its value and the
+other inputs. Coefficients are on the Box–Cox scale; they are not direct
+percentage changes in SD. The curves below show the combined fitted effects
+on the original scale, using the same residual-based back-transformation as
+the predictions. They describe model-based associations. The fitted curves rise
+over lower St values and flatten or turn downward toward the upper observed
+range. Differences between Fr conditions also vary across Re.
+
+```{r}
+#| label: fig-selected-effects
+#| fig-width: 8
+#| fig-height: 3.4
+#| fig-cap: "Full-data fitted curves and observed SD for sampled Re-Fr combinations. These are descriptive fits, not held-out predictions or uncertainty intervals."
+# Restrict each curve to the observed St range for an observed Re-Fr combination.
+effect_grid <- numeric_train |>
+  group_by(Re, Fr, Fr_invlogit) |>
+  summarise(St_min = min(St), St_max = max(St), .groups = "drop") |>
+  rowwise() |>
+  mutate(St = list(exp(seq(log(St_min), log(St_max), length.out = 60)))) |>
+  ungroup() |> unnest(St)
+effect_grid$predicted_SD <- predict_sd_pipeline(final_sd_pipeline, effect_grid)[, final_penalty_choice]
+ggplot(effect_grid, aes(St, predicted_SD, color = factor(Fr))) +
+  geom_line(linewidth = 0.7, na.rm = TRUE) +
+  geom_point(data = numeric_train, aes(y = sd_R), alpha = 0.5, size = 1) +
+  facet_wrap(~ Re, labeller = label_both) + scale_x_log10() + scale_y_log10() +
+  labs(x = "St (log scale)", y = "SD (log scale)", color = "Fr") + theme_minimal()
+```
+
+## Prediction performance and model diagnostics
+
+```{r}
+#| label: fig-loocv-predictions
+#| fig-width: 5.5
+#| fig-height: 4
+#| fig-cap: "Held-out predictions for the selected candidate. The dashed line represents perfect prediction."
+selected_predictions <- numeric_train |>
+  mutate(predicted_SD = pipeline_predictions[, best_pipeline_name])
+ggplot(selected_predictions, aes(sd_R, predicted_SD, color = factor(Fr))) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_point(size = 2) + coord_equal() +
+  labs(x = "Observed SD", y = "LOOCV predicted SD", color = "Fr") + theme_minimal()
+```
+
+The prediction plot assesses errors on observations excluded from fitting.
+The following diagnostics instead examine the full-data model on the
+Box–Cox response scale.
+
+```{r}
+#| label: fig-selected-diagnostics
 #| fig-width: 8
 #| fig-height: 7
-summary(final_sd)
-par(mfrow = c(2, 2))
-plot(final_sd)
+#| fig-cap: "Selected-model diagnostics: residual structure, normal Q-Q, changing spread, and influence. Box-Cox estimation is treated as fixed for these descriptive checks."
+diagnostic_data <- as.data.frame(sd_design(numeric_train, rich = TRUE))
+diagnostic_data$transformed_SD <- bc_transform(numeric_train$sd_R,
+                                               final_sd_pipeline$lambda_bc)
+# lm supplies the standard diagnostic plots for the same unpenalized fit.
+diagnostic_fit <- lm(transformed_SD ~ ., data = diagnostic_data)
+stopifnot(isTRUE(all.equal(unname(coef(diagnostic_fit)),
+                          unname(final_sd_pipeline$fit$coefficients), tolerance = 1e-8)))
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 2))
+plot(diagnostic_fit)
 par(mfrow = c(1, 1))
 ```
 
 
-## Held-out predictions and largest errors
+The second-order Box–Cox model is the leading SD surrogate candidate in this
+comparison. Improvements support flexible predictor relationships and response
+transformation more than shrinkage. The residual trend retains curvature, and
+the Q-Q plot shows tail departures, so lower prediction error does not establish 
+that all regression assumptions hold.
+Influential simulations are retained as valid observations.
+
+
+## Appendix: earlier model searches
+
+These tables document the initial staged searches. They explain the benchmark
+and simple continuous specification without repeating their diagnostics.
 
 ```{r}
-sd_predictions <- train |>
-  mutate(row_id = row_number(), predicted_SD = final_sd_predictions,
-         absolute_error = abs(sd_R - predicted_SD))
-
-ggplot(sd_predictions, aes(sd_R, predicted_SD, color = Fr, shape = Re)) +
-  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
-  geom_point(size = 2) +
-  labs(x = "Observed SD", y = "LOOCV predicted SD") +
-  theme_minimal()
-
-sd_predictions |>
-  slice_max(absolute_error, n = 5, with_ties = FALSE) |>
-  select(row_id, St, Re, Fr, sd_R, predicted_SD, absolute_error) |>
-  knitr::kable(digits = 4, caption = "Five largest LOOCV errors")
+#| label: appendix-searches
+knitr::kable(log_comparison |> select(model, RMSE, MAE), digits = 2,
+             caption = "Categorical inputs: additive log-transformation search.")
+knitr::kable(interaction_comparison |> select(model, RMSE, MAE), digits = 2,
+             caption = "Categorical inputs: interaction search after selecting transformations.")
+knitr::kable(numeric_log_comparison |> select(model, RMSE, MAE), digits = 2,
+             caption = "Continuous inputs: additive log-transformation search.")
+knitr::kable(numeric_interaction_comparison |> select(model, RMSE, MAE), digits = 2,
+             caption = "Continuous inputs: interaction search after selecting transformations.")
 ```
 
+For Box–Cox plus LASSO, the transformation parameter is estimated from the
+corresponding unpenalized design, rather than jointly with the penalty. The
+full-data penalty is at the weakest end of the tested grid and retains all
+predictor terms. This limits claims about an optimal penalty or variable selection.
 
-Among the additive models, logging both SD and St gives the lowest LOOCV RMSE
-(about 5.99) and MAE (2.52). Keeping those transformations and adding a Re-Fr
-interaction reduces RMSE to about 2.90 and MAE to 0.98, the lowest values among
-the interaction candidates. The selected model is
-`log(sd_R) ~ log(St) + Re * Fr`. It has no negative LOOCV predictions.
-
-This suggests that the association between gravitational condition and SD
-differs across Reynolds-number levels. The estimated log-St coefficient is
-about 0.469, describing a positive adjusted association with SD; its slope is
-shared across conditions in this model. These are model-based associations.
-
-The Q-Q plot shows lower-tail departures, and residual plots flag observations
-82, 87, and 30 for investigation. The scale-location plot also suggests that
-residual spread is not fully constant. Keep all observations unless a data
-error or scientific reason justifies exclusion. Model selection improves
-predictive accuracy but does not remove these diagnostic limitations.
+```{r}
+#| label: appendix-penalty
+pipeline_choices |>
+  filter(model == "Box-Cox + LASSO") |>
+  summarise(outer_folds = n(),
+            weakest_penalty_folds = sum(penalty_ratio == min(penalty_ratios))) |>
+  knitr::kable(caption = "Penalty-grid boundary check for Box-Cox plus LASSO.")
+```
