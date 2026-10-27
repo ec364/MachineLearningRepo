@@ -96,7 +96,6 @@ cv.err.kurtosis <- cv.glm(data, kurtosis.fit)
 cv.err.kurtosis.log <- cv.glm(data, kurtosis.fit.log)
 ```
 
-
 ```{r}
 #| label: results
 
