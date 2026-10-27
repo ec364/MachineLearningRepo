@@ -1,0 +1,266 @@
+---
+title: "amy_model_postfeedback"
+output: pdf_document
+date: "2026-10-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading in the data
+
+```{r}
+library(tidyverse)
+library(caret)
+library(glmnet)
+
+train <- read_csv("data-train.csv")
+
+# Calculate the four target statistics
+train <- train %>%
+  mutate(
+    m1 = R_moment_1,
+    m2 = R_moment_2,
+    m3 = R_moment_3,
+    m4 = R_moment_4,
+
+    C_moment_2 = m2 - m1^2,
+    C_moment_3 = m3 - 3*m1*m2 + 2*m1^3,
+    C_moment_4 = m4 - 4*m1*m3 + 6*m1^2*m2 - 3*m1^4,
+
+    sd_R = sqrt(C_moment_2),
+    skewness = C_moment_3 / sd_R^3,
+    kurtosis = C_moment_4 / sd_R^4,
+    ex_kurt = kurtosis - 3,
+  )
+
+# Only use the three input parameters as predictors
+X <- train %>%
+  select(Re, Fr, St)
+
+# The four required outcomes
+Y <- train %>%
+  select(R_moment_1, sd_R, skewness, kurtosis)
+
+# Check for Y
+summary(Y)
+```
+```{r}
+train |> 
+  ggplot(aes(x = St, y = skewness, color = as.factor(Re), shape = as.factor(Fr))) +
+  geom_point()
+```
+
+```{r}
+train |> 
+  ggplot(aes(x = log(St), y = skewness, color = as.factor(Re), shape = as.factor(Fr))) +
+  geom_point()
+```
+
+
+```{r}
+train %>%
+  pivot_longer(
+    cols = c(R_moment_1, sd_R, skewness, kurtosis),
+    names_to = "response",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 20, color = "white") +
+  facet_wrap(~ response, scales = "free", ncol = 2) +
+  theme_minimal() +
+  labs(
+    title = "Distributions of Response Variables",
+    x = "Value",
+    y = "Frequency"
+  )
+```
+everything is very right skewed - which is why we end up trying Box Cox transformation
+
+```{r}
+library(tidyr)
+
+train %>%
+  select(Re, Fr, St, skewness) %>%
+  pivot_longer(
+    cols = c(Re, Fr, St),
+    names_to = "parameter",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value, y = skewness)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = TRUE) +
+  facet_wrap(~ parameter, scales = "free_x") +
+  labs(
+    title = "Skewness vs Input Parameters",
+    x = "Input Parameter",
+    y = "Skewness"
+  ) +
+  theme_minimal()
+```
+
+
+Trying out logit transform for Fr:
+```{r}
+train <- train %>%
+  mutate(
+    Fr_invlogit = 1 / (1 + exp(-Fr))
+  )
+X <- train %>%
+  select(Re, Fr_invlogit, St)
+```
+
+```{r}
+train %>%
+  select(Re, Fr_invlogit, St, skewness) %>%
+  pivot_longer(
+    cols = c(Re, Fr_invlogit, St),
+    names_to = "parameter",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value, y = skewness)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = TRUE) +
+  facet_wrap(~ parameter, scales = "free_x") +
+  labs(
+    title = "Skewness vs Input Parameters",
+    x = "Input Parameter",
+    y = "Skewness"
+  ) +
+  theme_minimal()
+```
+Trying out inverse transform for Fr:
+
+```{r}
+train <- train %>%
+  mutate(
+    Fr_inv = 1 / Fr
+  )
+X <- train %>%
+  select(Re, Fr_inv, St)
+```
+
+```{r}
+train %>%
+  select(Re, Fr_inv, St, skewness) %>%
+  pivot_longer(
+    cols = c(Re, Fr_inv, St),
+    names_to = "parameter",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value, y = skewness)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = TRUE) +
+  facet_wrap(~ parameter, scales = "free_x") +
+  labs(
+    title = "Skewness vs Input Parameters",
+    x = "Input Parameter",
+    y = "Skewness"
+  ) +
+  theme_minimal()
+```
+Stick with Fr inverse logit for now. try models now
+
+## Model Fitting
+
+```{r}
+train <- train %>%
+  mutate(log_St = log(St))
+
+pairwise <- paste0(
+  "Re * Fr_invlogit + ",
+  "Re * log_St + ",
+  "Fr_invlogit * log_St"
+)
+
+models <- list(
+  M1_linear = skewness ~ Re + Fr_invlogit + log_St,
+
+  M2_pairwise = as.formula(
+    paste("skewness ~", pairwise)
+  ),
+
+  M3_quadratic_only =
+    skewness ~ Re + Fr_invlogit + log_St +
+    I(Re^2) + I(Fr_invlogit^2) + I(log_St^2),
+
+  M4_pairwise_S2 = as.formula(
+    paste("skewness ~", pairwise, "+ I(log_St^2)")
+  ),
+
+  M5_pairwise_R2_S2 = as.formula(
+    paste("skewness ~", pairwise,
+          "+ I(Re^2) + I(log_St^2)")
+  ),
+
+  M6_pairwise_F2_S2 = as.formula(
+    paste("skewness ~", pairwise,
+          "+ I(Fr_invlogit^2) + I(log_St^2)")
+  ),
+
+  M7_full_quadratic = as.formula(
+    paste("skewness ~", pairwise,
+          "+ I(Re^2) + I(Fr_invlogit^2) + I(log_St^2)")
+  ),
+
+  M8_three_way =
+    skewness ~ Re * Fr_invlogit * log_St,
+
+  M9_three_way_selected_squares =
+    skewness ~ Re * Fr_invlogit * log_St +
+    I(Re^2) + I(log_St^2)
+)
+```
+
+
+```{r}
+# Leave-One-Out Cross-Validation
+ctrl <- trainControl(
+  method = "LOOCV"
+)
+
+# Fit and compare all models
+results <- lapply(names(models), function(nm) {
+  fit <- caret::train(
+    models[[nm]],
+    data = train,
+    method = "lm",
+    trControl = ctrl,
+    metric = "RMSE"
+  )
+
+  tibble(
+    model = nm,
+    RMSE = fit$results$RMSE[1],
+    MAE = fit$results$MAE[1]
+  )
+}) %>%
+  bind_rows() %>%
+  arrange(RMSE)
+
+print(results)
+```
+doing RMSE/MAE how erin did:
+```{r}
+loo_rmse <- function(m) sqrt(mean((resid(m) / (1 - hatvalues(m)))^2))
+# Compare LOOCV RMSE across all models
+results <- lapply(names(models), function(nm) {
+  m <- lm(models[[nm]], data = train)
+
+  tibble(
+    model = nm,
+    RMSE = loo_rmse(m)
+  )
+}) %>%
+  bind_rows() %>%
+  arrange(RMSE)
+
+print(results)
+```
+
+
+
+## ask about LOOCV or train/test, box cox, can we use same transformations for all models, inverse logit or regular inverse
+
+
