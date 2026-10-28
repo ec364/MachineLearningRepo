@@ -561,3 +561,130 @@ fit_poly <- lm(spl_models[["C_poly"]], data = train)
 summary(fit_poly)
 ```
 
+# box cox
+```{r}
+
+library(MASS)
+
+# Original response must be strictly positive
+stopifnot(all(train$skewness > 0, na.rm = TRUE))
+
+# Your original model structure
+formula_bc <- skewness ~
+  (Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2)) +
+  log_St + I(log_St^2)
+
+# Estimate optimal Box-Cox lambda
+bc <- boxcox(
+  formula_bc,
+  data = train,
+  lambda = seq(-2, 2, by = 0.05),
+  plotit = TRUE
+)
+
+lambda_hat <- bc$x[which.max(bc$y)]
+cat("Optimal lambda:", lambda_hat, "\n")
+
+# Transform the response using the estimated lambda
+lambda <- lambda_hat
+
+train$skewness_bc <- if (abs(lambda) < 1e-6) {
+  log(train$skewness)
+} else {
+  (train$skewness^lambda - 1) / lambda
+}
+
+# Fit the transformed-response model
+C_ReFr_full_S2_BC <- lm(
+  skewness_bc ~
+    (Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2)) +
+    log_St + I(log_St^2),
+  data = train
+)
+
+summary(C_ReFr_full_S2_BC)
+
+```
+
+LOOCV
+```{r}
+
+
+library(MASS)
+
+# Original model structure
+formula_bc <- skewness ~
+  (Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2)) +
+  log_St + I(log_St^2)
+
+# LOOCV
+n <- nrow(train)
+predictions <- rep(NA_real_, n)
+actual_bc <- rep(NA_real_, n)
+lambdas <- rep(NA_real_, n)
+
+for (i in seq_len(n)) {
+  train_fold <- train[-i, ]
+  test_fold  <- train[i, , drop = FALSE]
+
+  # Estimate lambda using only the training fold
+  bc <- boxcox(
+    formula_bc,
+    data = train_fold,
+    lambda = seq(-2, 2, by = 0.05),
+    plotit = FALSE
+  )
+
+  lambda_i <- bc$x[which.max(bc$y)]
+  lambdas[i] <- lambda_i
+
+  # Transform training response
+  y <- train_fold$skewness
+
+  train_fold$skewness_bc <- if (abs(lambda_i) < 1e-6) {
+    log(y)
+  } else {
+    (y^lambda_i - 1) / lambda_i
+  }
+
+  # Fit model on transformed response
+  fit <- lm(
+    skewness_bc ~
+      (Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2)) +
+      log_St + I(log_St^2),
+    data = train_fold
+  )
+
+  # Predict held-out observation on transformed scale
+  predictions[i] <- predict(fit, newdata = test_fold)
+
+  # Transform held-out actual using the same fold-specific lambda
+  y_test <- test_fold$skewness
+
+  actual_bc[i] <- if (abs(lambda_i) < 1e-6) {
+    log(y_test)
+  } else {
+    (y_test^lambda_i - 1) / lambda_i
+  }
+}
+
+# Evaluate on Box-Cox-transformed skewness scale
+valid <- is.finite(predictions) & is.finite(actual_bc)
+
+RMSE_bc <- sqrt(mean(
+  (actual_bc[valid] - predictions[valid])^2
+))
+
+MAE_bc <- mean(
+  abs(actual_bc[valid] - predictions[valid])
+)
+
+cat("Valid folds:", sum(valid), "/", n, "\n")
+cat("LOOCV RMSE (Box-Cox scale):", RMSE_bc, "\n")
+cat("LOOCV MAE (Box-Cox scale):", MAE_bc, "\n")
+cat("Mean fold lambda:", mean(lambdas, na.rm = TRUE), "\n")
+cat("SD fold lambda:", sd(lambdas, na.rm = TRUE), "\n")
+
+
+```
+
