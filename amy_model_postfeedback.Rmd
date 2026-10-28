@@ -451,10 +451,10 @@ test <- test %>%
   )
 
 # Add predicted skewness
-test$predicted_skewness <- predict(model_C, newdata = test)
+test$predicted_skewness <- exp(predict(model_C, newdata = test))
 
 # Save as a new CSV
-write.csv(test, "data-test-predictions.csv", row.names = FALSE)
+write.csv(test, "data-test-skewness-predictions.csv", row.names = FALSE)
 ```
 
 
