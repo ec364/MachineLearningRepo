@@ -4,7 +4,7 @@ format: pdf
 editor: visual
 ---
 
-everyone pls ignore this, qmd glitches out on my container so i paste the stuff here to see what u guys are doing
+everyone pls ignore this, qmd glitches out on my container so i paste the stuff here to see what u guys are
 
 ```{r}
 #load packages

@@ -383,12 +383,113 @@ cat("SD of raw skewness :", sd(train$skewness), "\n")
 ```
 C_ReFr_full_S2 (log(skewness) ~ (Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2)) + log_St + I(log_St^2)) has lowest RMSE and MAE
 
+```{r}
+library(dplyr)
+
+# Explicitly omit the aliased highest-order interaction
+formula_C_reduced <- log_skew ~
+  Re + I(Re^2) +
+  Fr_invlogit + I(Fr_invlogit^2) +
+  Re:Fr_invlogit +
+  Re:I(Fr_invlogit^2) +
+  I(Re^2):Fr_invlogit +
+  log_St + I(log_St^2)
+
+# LOOCV
+n <- nrow(train)
+y_actual <- train$log_skew
+y_pred <- rep(NA_real_, n)
+
+for (i in seq_len(n)) {
+  fit <- lm(formula_C_reduced, data = train[-i, , drop = FALSE])
+
+  pred <- predict(fit, newdata = train[i, , drop = FALSE])
+
+  if (length(pred) == 1 && is.finite(pred)) {
+    y_pred[i] <- pred
+  }
+}
+
+# Check whether every fold produced a valid prediction
+if (anyNA(y_pred)) {
+  warning(sum(is.na(y_pred)), " LOOCV predictions were invalid.")
+}
+
+# Calculate metrics using valid predictions
+valid <- is.finite(y_pred) & is.finite(y_actual)
+errors <- y_actual[valid] - y_pred[valid]
+
+loocv_C_reduced <- data.frame(
+  Model = "C_reduced",
+  RMSE_log = sqrt(mean(errors^2)),
+  MAE_log = mean(abs(errors)),
+  Valid_folds = sum(valid),
+  Total_folds = n
+)
+
+print(loocv_C_reduced)
+```
+
+
 print out model:
 ```{r}
 model_C <- lm(models$C_ReFr_full_S2, data = train)
 
 summary(model_C)
 ```
+
+```{r}
+# Fit Model C
+model_C <- lm(models$C_ReFr_full_S2, data = train)
+
+# Read in the test data
+test <- read.csv("data-test.csv")
+test <- test %>%
+  mutate(
+    Fr_invlogit = plogis(Fr),  # only if this matches your training transformation
+    log_St = log(St)
+  )
+
+# Add predicted skewness
+test$predicted_skewness <- predict(model_C, newdata = test)
+
+# Save as a new CSV
+write.csv(test, "data-test-predictions.csv", row.names = FALSE)
+```
+
+
+```{r}
+coefs <- coef(model_C)
+
+cat("log(skewness) =\n")
+cat(sprintf("  %.6f\n", coefs[1]))
+
+for (i in 2:length(coefs)) {
+  if (!is.na(coefs[i])) {
+    cat(sprintf("  %+.6f * %s\n", coefs[i], names(coefs)[i]))
+  }
+}
+```
+
+
+```{r}
+fit_C <- lm(models$C_ReFr_full_S2, data = train)
+
+# Check which coefficients are aliased
+alias(fit_C)
+
+# Check how many observations you have for each Re-Fr combination
+with(train, table(Re, Fr))
+
+# Check the rank of the model matrix
+X <- model.matrix(fit_C)
+
+c(
+  columns = ncol(X),
+  rank = qr(X)$rank
+)
+```
+
 
 ## Lasso/Variable Selection
 
@@ -554,11 +655,201 @@ ggsave("spline_St_effect.png", p2, width = 7, height = 4, dpi = 200)
 ```
 
 ```{r}
-fit_ns4 <- lm(spl_models[["S_ns3"]], data = train)
-summary(fit_ns4)
+library(tidyverse)
+library(caret)
+library(recipes)
 
-fit_poly <- lm(spl_models[["C_poly"]], data = train)
-summary(fit_poly)
+# Prepare base dataset
+train <- train %>% mutate(small_St = as.numeric(St == min(St)))
+
+# Base recipe with the full cell structure (polynomial terms and interaction)
+base_rec <- recipe(log_skew ~ Re + Fr_invlogit + log_St + small_St, data = train) %>%
+  step_mutate(
+    Re2 = Re^2,
+    Fr2 = Fr_invlogit^2
+  ) %>%
+  step_interact(terms = ~ (Re + Re2):(Fr_invlogit + Fr2))
+
+# Define model specifications as recipes to ensure knots are estimated inside CV
+rec_list <- list(
+  C_poly = base_rec %>% 
+    step_mutate(log_St2 = log_St^2) %>% 
+    step_rm(small_St),
+    
+  S_ns3 = base_rec %>% 
+    step_ns(log_St, deg_free = 3) %>% 
+    step_rm(small_St),
+    
+  S_ns4 = base_rec %>% 
+    step_ns(log_St, deg_free = 4) %>% 
+    step_rm(small_St),
+    
+  S_ns5 = base_rec %>% 
+    step_ns(log_St, deg_free = 5) %>% 
+    step_rm(small_St),
+    
+  S_bs3 = base_rec %>% 
+    step_bs(log_St, deg_free = 3) %>% 
+    step_rm(small_St),
+    
+  # Specific knot placement: set manual knot at log(0.1)
+  S_bs_knot0.1 = base_rec %>% 
+    step_bs(log_St, options = list(knots = log(0.1), degree = 3)) %>% 
+    step_rm(small_St),
+    
+  S_ns3_small = base_rec %>% 
+    step_ns(log_St, deg_free = 3)
+)
+
+ctrl <- trainControl(method = "LOOCV", savePredictions = "final")
+
+# Fit models via recipes (no knot leakage across folds)
+spl_results <- lapply(names(rec_list), function(nm) {
+  fit <- caret::train(
+    rec_list[[nm]],
+    data = train,
+    method = "lm",
+    trControl = ctrl,
+    metric = "RMSE"
+  )
+
+  p <- fit$pred
+  keep <- train$small_St[p$rowIndex] == 0
+
+  tibble(
+    model               = nm,
+    RMSE_log            = sqrt(mean((p$pred - p$obs)^2)),
+    MAE_log             = mean(abs(p$pred - p$obs)),
+    RMSE_log_no_smallSt = sqrt(mean((p$pred[keep] - p$obs[keep])^2)),
+    MAE_log_no_smallSt  = mean(abs(p$pred[keep] - p$obs[keep])),
+    RMSE_raw            = sqrt(mean((exp(p$pred) - exp(p$obs))^2)),
+    MAE_raw             = mean(abs(exp(p$pred) - exp(p$obs)))
+  )
+}) %>%
+  bind_rows() %>%
+  arrange(RMSE_log)
+
+print(spl_results, n = Inf)
+
+# ---- Fit best spline model on full data for visualization ----
+best_spline_name <- "S_ns3"
+
+# Prep and bake the chosen recipe on full data
+best_rec <- recipes::prep(rec_list[[best_spline_name]], training = train)
+train_baked <- recipes::bake(best_rec, new_data = NULL)
+
+fit_s <- lm(log_skew ~ ., data = train_baked)
+
+# Grid setup
+grid <- train %>%
+  distinct(Re, Fr, Fr_invlogit) %>%
+  crossing(St = sort(unique(c(train$St, seq(0.05, 3, length.out = 120))))) %>%
+  mutate(log_St = log(St), small_St = 0)
+
+grid_baked <- bake(best_rec, new_data = grid)
+grid$log_skew_hat <- predict(fit_s, newdata = grid_baked)
+
+# Plot 1: Fitted Cell Curves
+p <- ggplot() +
+  geom_point(data = train, aes(log_St, log_skew, color = factor(Re), shape = factor(Fr))) +
+  geom_line(data = grid, aes(log_St, log_skew_hat, color = factor(Re),
+                             linetype = factor(Fr), group = interaction(Re, Fr))) +
+  labs(x = "log(St)", y = "log(skewness)", color = "Re", shape = "Fr", linetype = "Fr",
+       title = paste("Fitted cell curves:", best_spline_name))
+print(p)
+ggsave("spline_fit_by_cell.png", p, width = 8, height = 5, dpi = 200)
+
+# Plot 2: St Effect relative to St = 1
+effect <- grid %>% filter(Re == 224, Fr == 0.3) %>%
+  mutate(effect_vs_St1 = log_skew_hat - log_skew_hat[which.min(abs(St - 1))])
+
+p2 <- ggplot(effect, aes(St, effect_vs_St1)) + 
+  geom_line() +
+  geom_hline(yintercept = 0, linetype = 2) + 
+  scale_x_log10() +
+  labs(y = "change in log(skewness) relative to St = 1",
+       title = "Estimated St effect (same in every Re/Fr cell)")
+print(p2)
+ggsave("spline_St_effect.png", p2, width = 7, height = 4, dpi = 200)
+```
+
+
+
+```{r}
+spl_results <- lapply(names(spl_models), function(nm) {
+  fit <- caret::train(
+    spl_models[[nm]],
+    data = train,
+    method = "lm",
+    trControl = ctrl,
+    metric = "RMSE"
+  )
+
+  p <- fit$pred
+  keep <- train$small_St[p$rowIndex] == 0
+
+  tibble(
+    model               = nm,
+    RMSE_log            = sqrt(mean((p$pred - p$obs)^2)),
+    MAE_log             = mean(abs(p$pred - p$obs)),
+    RMSE_log_no_smallSt = sqrt(mean((p$pred[keep] - p$obs[keep])^2)),
+    MAE_log_no_smallSt  = mean(abs(p$pred[keep] - p$obs[keep])),
+    RMSE_raw            = sqrt(mean((exp(p$pred) - exp(p$obs))^2)),
+    MAE_raw             = mean(abs(exp(p$pred) - exp(p$obs)))
+  )
+}) %>%
+  bind_rows() %>%
+  left_join(model_info, by = "model") %>%
+  dplyr::select(
+    spline_type, knots_df,
+    RMSE_log, MAE_log,
+    RMSE_log_no_smallSt, MAE_log_no_smallSt,
+    RMSE_raw, MAE_raw
+  ) %>%
+  arrange(RMSE_log)
+
+print(spl_results, n = Inf, width = Inf)
+```
+
+
+```{r}
+fit_ns3 <- lm(spl_models[["S_ns3"]], data = train)
+summary(fit_ns4)
+```
+```{r}
+fit_spline <- lm(spl_models[["S_ns3"]], data = train)
+
+re_values <- c(90, 224, 398)
+fr_values <- c(0.052, 0.3, Inf)
+
+newdata <- expand.grid(
+  Re = re_values,
+  Fr = fr_values
+) |>
+  dplyr::mutate(
+    Fr_invlogit = 1 / (1 + exp(-Fr)),
+    log_St = 0  # St = 1
+  )
+
+# Predict log(skewness), then transform back to skewness
+newdata$predicted_skewness <- exp(
+  predict(fit_spline, newdata = newdata)
+)
+
+# Display as a Re × Fr table
+table_spline <- newdata |>
+  dplyr::select(Re, Fr, predicted_skewness) |>
+  tidyr::pivot_wider(
+    names_from = Fr,
+    values_from = predicted_skewness,
+    names_prefix = "Fr_"
+  ) |>
+  dplyr::mutate(
+    dplyr::across(where(is.numeric) & !dplyr::all_of("Re"),
+                  ~ round(.x, 1))
+  )
+
+print(table_spline)
 ```
 
 # box cox
