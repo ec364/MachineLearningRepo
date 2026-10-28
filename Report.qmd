@@ -1,77 +1,79 @@
 ---
-title: "Report"
+title: "Predicting Particle Cluster Properties in Turbulent Flows"
 format: pdf
 editor: visual
+execute:
+  echo: false
+  message: false
+  error: false
 ---
 
-## Load Data
+
 
 ```{r}
+#| label: prepare-report-data
+#| include: false
 library(tidyverse)
 
-train <- read_csv("data-train.csv")
-
-#eda
-
-train |>
-  ggplot(aes(St)) +
-  geom_histogram()
-
-train |>
-  ggplot(aes(Re)) +
-  geom_histogram()
-
-train |>
-  ggplot(aes(Fr)) +
-  geom_histogram()
-
-train |>
-  ggplot(aes(R_moment_1)) +
-  geom_histogram()
-
-train |>
-  ggplot(aes(C_moment_2)) +
-  geom_histogram()
-
-train |>
-  ggplot(aes(R_moment_3)) +
-  geom_histogram()
-
-names(train)
-
-
-
-```
-
-```{r}
-
-#making new variables for our summary stats
-
-#mean = R_moment_1, C_moment_2 is variance, everything else is as commented
-train <- train %>%
+train <- read_csv("data-train.csv", show_col_types = FALSE) |>
   mutate(
-    m1 = R_moment_1, m2 = R_moment_2, m3 = R_moment_3, m4 = R_moment_4,
-
-    # central moments
-    C_moment_2 = m2 - m1^2,                               # variance
+    m1 = R_moment_1,
+    m2 = R_moment_2,
+    m3 = R_moment_3,
+    m4 = R_moment_4,
+    C_moment_2 = m2 - m1^2,
     C_moment_3 = m3 - 3*m1*m2 + 2*m1^3,
     C_moment_4 = m4 - 4*m1*m3 + 6*m1^2*m2 - 3*m1^4,
-
-    # standardized versions
-    sd_R     = sqrt(C_moment_2),
+    sd_R = sqrt(C_moment_2),
     skewness = C_moment_3 / sd_R^3,
-    kurtosis = C_moment_4 / sd_R^4,                       # raw kurtosis
-    ex_kurt  = kurtosis - 3                               # excess kurtosis
+    kurtosis = C_moment_4 / sd_R^4,
+    ex_kurt = kurtosis - 3
   )
 
+stopifnot(
+  nrow(train) == 89L,
+  all(is.finite(as.matrix(select(train, m1, sd_R, skewness, kurtosis)))),
+  all(train$sd_R > 0)
+)
 
-#using a categorical to address infinity
-train <- train %>%
-  mutate(
-    Fr = as.factor(Fr),
-    Re = as.factor(Re))
-
-model <- lm(R_moment_1 ~ log(St) + Re + Fr, data = train)
-
-summary(model)
 ```
+
+## Introduction
+
+Particle clustering in turbulent flows has important implications for astrophysics, climatology, and engineering. Numerical simulations provide information about these clusters, but their computational cost limits how many physical conditions researchers can investigate. A statistical surrogate offers a faster way to predict cluster properties at new input settings.
+
+Using 89 simulations, we model four features of the particle cluster-volume distribution: its mean, standard deviation, skewness, and kurtosis. The predictors are Reynolds number (Re), which characterizes the flow regime; Froude number (Fr), which describes the relative influence of gravity; and Stokes number (St), which characterizes particle inertia relative to the flow. Our objectives are to predict these distributional summaries and understand how their relationships with the inputs differ. These summaries describe important distributional features without fully specifying the underlying distribution.
+
+We develop separate regression models for the four responses, investigating transformations, nonlinear terms, and interactions. Continuous predictor representations allow predictions between sampled settings. We use cross-validation to assess prediction and fitted relationships to investigate scientific patterns. Accuracy at new input levels and outside the sampled range requires additional validation.
+
+## Methodology
+
+### Data and exploratory analysis
+
+For raw moments $m_j=E[V^j]$ of cluster volume $V$, we calculate the mean as $m_1$ and SD as $\sqrt{m_2-m_1^2}$. Skewness and kurtosis are the third and fourth central moments divided by SD cubed and SD to the fourth power, respectively. We use ordinary kurtosis, without subtracting three.
+
+The training data contain three Re levels and three Fr levels; Fr = infinity represents the no-gravity condition. Re = 398, Fr = 0.3 is unobserved. All simulations are retained as valid observations.
+
+EDA
+
+### Candidate models and fitting
+
+We begin with additive linear regression and investigate interactions and nonlinear predictor relationships. Polynomial terms, splines, response transformations, and LASSO provide candidate ways to accommodate these patterns.
+
+
+
+## Results
+
+
+### Predictive performance
+
+
+### Scientific interpretation across the four responses
+
+
+### Diagnostics and scope of reliability
+
+
+
+## Conclusion
+
