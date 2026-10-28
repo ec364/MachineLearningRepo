@@ -474,6 +474,30 @@ the Q-Q plot shows tail departures, so lower prediction error does not establish
 that all regression assumptions hold.
 Influential simulations are retained as valid observations.
 
+```{r}
+# Read the 23 test input settings and apply the same input transformation
+test <- read_csv("data-test.csv", show_col_types = FALSE) |>
+  mutate(Fr_invlogit = plogis(Fr))
+
+# Predict SD using the fitted model and training-based back-transformation
+predicted_sd <- predict_sd_pipeline(
+  final_sd_pipeline, test
+)[, final_penalty_choice]
+
+# Check and save, keeping the original test-row order
+stopifnot(
+  length(predicted_sd) == nrow(test),
+  all(is.finite(predicted_sd)),
+  all(predicted_sd > 0)
+)
+
+sd_test_predictions <- test |>
+  select(St, Re, Fr) |>
+  mutate(predicted_sd = predicted_sd)
+
+write_csv(sd_test_predictions, "sd_test_predictions.csv")
+```
+
 
 ## Appendix: earlier model searches
 
