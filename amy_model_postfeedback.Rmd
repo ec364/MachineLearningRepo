@@ -469,4 +469,95 @@ for (i in 2:length(b)) {
 cat("\n")
 ```
 
+## trying spline
+```{r}
+library(tidyverse)
+library(caret)
+library(splines)
+
+train <- train %>% mutate(small_St = as.numeric(St == min(St)))   # the St = 0.05 rows
+
+# Re and Fr have only 3 distinct values each, so a spline there would equal a quadratic.
+# Keep the Re x Fr "cell" structure from model C and put the spline on log St only.
+cells <- "(Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2))"
+mk <- function(rhs) as.formula(paste("log_skew ~", rhs))
+
+spl_models <- list(
+  C_poly         = mk(paste(cells, "+ log_St + I(log_St^2)")),              # reference
+  S_ns3          = mk(paste(cells, "+ ns(log_St, df = 3)")),                # natural cubic, 3 df
+  S_ns4          = mk(paste(cells, "+ ns(log_St, df = 4)")),
+  S_ns5          = mk(paste(cells, "+ ns(log_St, df = 5)")),
+  S_bs3          = mk(paste(cells, "+ bs(log_St, df = 3)")),                # cubic B-spline
+  S_bs_knot0.1   = mk(paste(cells, "+ bs(log_St, knots = log(0.1), degree = 3)")),  # knot at St = 0.1
+  S_ns3_small    = mk(paste(cells, "+ ns(log_St, df = 3) + small_St"))      # + indicator for St = 0.05
+)
+
+# NOTE: caret's formula interface builds the spline basis once on all rows (knots come from
+# all data), then does LOOCV on the columns. The leakage is only the knot locations: negligible.
+ctrl <- trainControl(method = "LOOCV", savePredictions = "final")
+
+spl_results <- lapply(names(spl_models), function(nm) {
+  fit <- caret::train(
+    spl_models[[nm]],
+    data = train,
+    method = "lm",
+    trControl = ctrl,
+    metric = "RMSE"
+  )
+
+  p <- fit$pred
+  keep <- train$small_St[p$rowIndex] == 0
+
+  tibble(
+    model               = nm,
+    RMSE_log            = sqrt(mean((p$pred - p$obs)^2)),
+    MAE_log             = mean(abs(p$pred - p$obs)),
+    RMSE_log_no_smallSt = sqrt(mean((p$pred[keep] - p$obs[keep])^2)),
+    MAE_log_no_smallSt  = mean(abs(p$pred[keep] - p$obs[keep])),
+    RMSE_raw            = sqrt(mean((exp(p$pred) - exp(p$obs))^2)),
+    MAE_raw             = mean(abs(exp(p$pred) - exp(p$obs)))
+  )
+}) %>%
+  bind_rows() %>%
+  arrange(RMSE_log)
+
+print(spl_results, n = Inf)
+
+# ---- Fitted curves per Re x Fr cell on top of the data (like your first EDA plot) ----
+best_spline <- "S_ns3"                            # change to whichever spline you want to show
+fit_s <- lm(spl_models[[best_spline]], data = train)
+
+grid <- train %>%
+  distinct(Re, Fr, Fr_invlogit) %>%
+  crossing(St = sort(unique(c(train$St, seq(0.05, 3, length.out = 120))))) %>%
+  mutate(log_St = log(St), small_St = 0)
+grid$log_skew_hat <- predict(fit_s, newdata = grid)
+
+p <- ggplot() +
+  geom_point(data = train, aes(log_St, log_skew, color = factor(Re), shape = factor(Fr))) +
+  geom_line(data = grid, aes(log_St, log_skew_hat, color = factor(Re),
+                             linetype = factor(Fr), group = interaction(Re, Fr))) +
+  labs(x = "log(St)", y = "log(skewness)", color = "Re", shape = "Fr", linetype = "Fr",
+       title = paste("Fitted cell curves:", best_spline))
+print(p)
+ggsave("spline_fit_by_cell.png", p, width = 8, height = 5, dpi = 200)
+
+# ---- The St effect itself (same shape in every cell, since the model is additive in St) ----
+effect <- grid %>% filter(Re == 224, Fr == 0.3) %>%
+  mutate(effect_vs_St1 = log_skew_hat - log_skew_hat[which.min(abs(St - 1))])
+p2 <- ggplot(effect, aes(St, effect_vs_St1)) + geom_line() +
+  geom_hline(yintercept = 0, linetype = 2) + scale_x_log10() +
+  labs(y = "change in log(skewness) relative to St = 1",
+       title = "Estimated St effect (same in every Re/Fr cell)")
+print(p2)
+ggsave("spline_St_effect.png", p2, width = 7, height = 4, dpi = 200)
+```
+
+```{r}
+fit_ns4 <- lm(spl_models[["S_ns3"]], data = train)
+summary(fit_ns4)
+
+fit_poly <- lm(spl_models[["C_poly"]], data = train)
+summary(fit_poly)
+```
 
