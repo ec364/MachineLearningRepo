@@ -57,7 +57,12 @@ train |>
   ggplot(aes(x = log(St), y = skewness, color = as.factor(Re), shape = as.factor(Fr))) +
   geom_point()
 ```
-
+log transform skewness too
+```{r}
+train |> 
+  ggplot(aes(x = log(St), y = log(skewness), color = as.factor(Re), shape = as.factor(Fr))) +
+  geom_point()
+```
 
 ```{r}
 train %>%
@@ -130,37 +135,32 @@ train %>%
   ) +
   theme_minimal()
 ```
-Trying out inverse transform for Fr:
 
-```{r}
-train <- train %>%
-  mutate(
-    Fr_inv = 1 / Fr
-  )
-X <- train %>%
-  select(Re, Fr_inv, St)
-```
+Stick with Fr inverse logit for now. 
 
+Same as above, but try log skewness too
 ```{r}
 train %>%
-  select(Re, Fr_inv, St, skewness) %>%
+  select(Re, Fr_invlogit, St, skewness) %>%
   pivot_longer(
-    cols = c(Re, Fr_inv, St),
+    cols = c(Re, Fr_invlogit, St),
     names_to = "parameter",
     values_to = "value"
   ) %>%
-  ggplot(aes(x = value, y = skewness)) +
+  ggplot(aes(x = value, y = log(skewness))) +
   geom_point() +
   geom_smooth(method = "loess", se = TRUE) +
   facet_wrap(~ parameter, scales = "free_x") +
   labs(
     title = "Skewness vs Input Parameters",
     x = "Input Parameter",
-    y = "Skewness"
+    y = "Log Skewness"
   ) +
   theme_minimal()
 ```
-Stick with Fr inverse logit for now. try models now
+
+
+try models now
 
 ## Model Fitting
 
@@ -259,8 +259,214 @@ results <- lapply(names(models), function(nm) {
 print(results)
 ```
 
+```{r}
+summary(train$skewness)
+sd(train$skewness, na.rm = TRUE)
+range(train$skewness, na.rm = TRUE)
+sqrt(mean((train$skewness - mean(train$skewness, na.rm = TRUE))^2,
+          na.rm = TRUE))
+```
+```{r}
+summary(train$kurtosis)
+sd(train$kurtosis, na.rm = TRUE)
+range(train$kurtosis, na.rm = TRUE)
+```
 
+## i forgot to log let me redo this lol
+```{r}
+# Assumes `train` already exists (with skewness computed) from the earlier chunk.
+library(tidyverse)
+library(caret)
+ 
+train <- train %>%
+  mutate(
+    log_skew    = log(skewness)                    # response on log scale
+  )
 
-## ask about LOOCV or train/test, box cox, can we use same transformations for all models, inverse logit or regular inverse
+pairwise <- "Re * Fr_invlogit + Re * log_St + Fr_invlogit * log_St"
+mk <- function(rhs) as.formula(paste("log_skew ~", rhs))
+ 
+models <- list(
+  M1_linear          = mk("Re + Fr_invlogit + log_St"),
+  M2_pairwise        = mk(pairwise),
+  M3_quadratic_only  = mk("Re + Fr_invlogit + log_St + I(Re^2) + I(Fr_invlogit^2) + I(log_St^2)"),
+  M4_pairwise_S2     = mk(paste(pairwise, "+ I(log_St^2)")),
+  M5_pairwise_R2_S2  = mk(paste(pairwise, "+ I(Re^2) + I(log_St^2)")),
+  M6_pairwise_F2_S2  = mk(paste(pairwise, "+ I(Fr_invlogit^2) + I(log_St^2)")),
+  M7_full_quadratic  = mk(paste(pairwise, "+ I(Re^2) + I(Fr_invlogit^2) + I(log_St^2)")),
+  M8_three_way       = mk("Re * Fr_invlogit * log_St"),
+  M9_three_way_sq    = mk("Re * Fr_invlogit * log_St + I(Re^2) + I(log_St^2)")
+)
+ 
+# LOOCV; keep the held-out predictions so we can also report raw-scale error
+ctrl <- trainControl(method = "LOOCV", savePredictions = "final")
+ 
+results <- lapply(names(models), function(nm) {
+  fit <- caret::train(models[[nm]], data = train, method = "lm",
+                      trControl = ctrl, metric = "RMSE")
+  p <- fit$pred
+  tibble(
+    model    = nm,
+    RMSE_log = fit$results$RMSE[1],
+    MAE_log  = fit$results$MAE[1],
+    RMSE_raw = sqrt(mean((exp(p$pred) - exp(p$obs))^2))  # back-transformed
+  )
+}) %>%
+  bind_rows() %>%
+  arrange(RMSE_log)
+ 
+print(results, n = Inf)
+ 
+# Baselines for context (an intercept-only model gets about these)
+cat("\nSD of log(skewness):", sd(train$log_skew), "\n")
+cat("SD of raw skewness :", sd(train$skewness), "\n")
+```
+
+```{r}
+print(results, n = Inf)
+```
+
+## adding some stuff to justify w EDA
+```{r}
+pairwise <- "Re * Fr_invlogit + Re * log_St + Fr_invlogit * log_St"
+mk <- function(rhs) as.formula(paste("log_skew ~", rhs))
+ 
+models <- list(
+  # --- original set ---
+  M1_linear          = mk("Re + Fr_invlogit + log_St"),
+  M2_pairwise        = mk(pairwise),
+  M3_quadratic_only  = mk("Re + Fr_invlogit + log_St + I(Re^2) + I(Fr_invlogit^2) + I(log_St^2)"),
+  M4_pairwise_S2     = mk(paste(pairwise, "+ I(log_St^2)")),
+  M5_pairwise_R2_S2  = mk(paste(pairwise, "+ I(Re^2) + I(log_St^2)")),
+  M6_pairwise_F2_S2  = mk(paste(pairwise, "+ I(Fr_invlogit^2) + I(log_St^2)")),
+  M7_full_quadratic  = mk(paste(pairwise, "+ I(Re^2) + I(Fr_invlogit^2) + I(log_St^2)")),
+  M8_three_way       = mk("Re * Fr_invlogit * log_St"),
+  M9_three_way_sq    = mk("Re * Fr_invlogit * log_St + I(Re^2) + I(log_St^2)"),
+ 
+  # --- new, motivated by the EDA plots: tiers set by Re x Fr (incl. squared terms), weak St effect ---
+  # B: full (Re, Re^2) x (Fr, Fr^2) crossing + linear log St  (cell-means-like ceiling; one NA coef expected)
+  B_ReFr_full        = mk("(Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2)) + log_St"),
+  # C: B + curvature in log St
+  C_ReFr_full_S2     = mk("(Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2)) + log_St + I(log_St^2)"),
+  # D: Re linear only (no Re^2) crossed with Fr terms, + curved log St
+  D_ReFr_noRe2_S2    = mk("Re * (Fr_invlogit + I(Fr_invlogit^2)) + log_St + I(log_St^2)"),
+  # E: D + St slopes that differ by Re / Fr
+  E_D_plus_St_inter  = mk("Re * (Fr_invlogit + I(Fr_invlogit^2)) + log_St + I(log_St^2) + Re:log_St + Fr_invlogit:log_St"),
+  F_noSt = mk("(Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2))")
+)
+ 
+# LOOCV; keep the held-out predictions so we can also report raw-scale error
+ctrl <- trainControl(method = "LOOCV", savePredictions = "final")
+ 
+small_St <- train$St == min(train$St)   # the St = 0.05 rows (where the outliers are)
+ 
+results <- lapply(names(models), function(nm) {
+  fit <- caret::train(models[[nm]], data = train, method = "lm",
+                      trControl = ctrl, metric = "RMSE")
+  p <- fit$pred
+  keep <- !small_St[p$rowIndex]
+  tibble(
+    model        = nm,
+    RMSE_log     = fit$results$RMSE[1],
+    MAE_log      = fit$results$MAE[1],
+    RMSE_log_no_smallSt = sqrt(mean((p$pred[keep] - p$obs[keep])^2)),  # diagnostic only
+    RMSE_raw     = sqrt(mean((exp(p$pred) - exp(p$obs))^2))
+  )
+}) %>%
+  bind_rows() %>%
+  arrange(RMSE_log)
+ 
+print(results, n = Inf)
+ 
+cat("\nSD of log(skewness):", sd(train$log_skew), "\n")
+cat("SD of raw skewness :", sd(train$skewness), "\n")
+```
+C_ReFr_full_S2 (log(skewness) ~ (Re + I(Re^2)) * (Fr_invlogit + I(Fr_invlogit^2)) + log_St + I(log_St^2)) has lowest RMSE and MAE
+
+print out model:
+```{r}
+model_C <- lm(models$C_ReFr_full_S2, data = train)
+
+summary(model_C)
+```
+
+## Lasso/Variable Selection
+
+```{r}
+# Run AFTER skewness_loocv.R (needs `train` with Fr_invlogit, log_St, log_skew).
+library(tidyverse)
+library(glmnet)
+
+# 0. Optional centering (reduces collinearity between x and x^2; helps the lasso).
+#    If TRUE, remember to subtract these SAME training means from data-test.csv.
+center <- FALSE
+ctr <- c(Re = mean(train$Re), Fr = mean(train$Fr_invlogit), St = mean(train$log_St))
+train_l <- train %>%
+  mutate(Re_v = if (center) Re - ctr["Re"]           else Re,
+         Fr_v = if (center) Fr_invlogit - ctr["Fr"]  else Fr_invlogit,
+         St_v = if (center) log_St - ctr["St"]       else log_St)
+
+# 1. BIG candidate pool: all pairwise products of Re, Re^2, Fr, Fr^2, logSt, logSt^2
+#    (6 main effects + 15 products) plus the three-way Re:Fr:logSt term so that
+#    M8/M9-type terms are covered too. 22 columns for 89 rows.
+pool_formula <- log_skew ~ (Re_v + I(Re_v^2) + Fr_v + I(Fr_v^2) + St_v + I(St_v^2))^2 +
+  Re_v:Fr_v:St_v
+
+X <- model.matrix(pool_formula, data = train_l)[, -1]   # drop intercept column
+y <- train_l$log_skew
+n <- nrow(X)
+cat("Candidate columns:", ncol(X), "\n")
+
+# 2. LOOCV lasso / elastic net. glmnet standardizes columns internally.
+#    alpha = 1 is the lasso; alpha < 1 mixes in ridge (better with correlated terms).
+#    Explicit, wide lambda path so the CV optimum isn't cut off at either end.
+set.seed(325)
+alphas <- c(0.25, 0.5, 0.75, 1)
+lam    <- 10^seq(0.5, -7, length.out = 150)
+cv_fits <- lapply(alphas, function(a)
+  cv.glmnet(X, y, alpha = a, lambda = lam, nfolds = n, foldid = seq_len(n),
+            grouped = FALSE, type.measure = "mse"))
+
+cmp <- tibble(
+  alpha        = alphas,
+  RMSE_log_min = sapply(cv_fits, function(f) sqrt(min(f$cvm))),   # LOOCV RMSE at best lambda
+  lambda_min   = sapply(cv_fits, function(f) f$lambda.min),
+  n_terms_min  = sapply(cv_fits, function(f) sum(coef(f, s = "lambda.min")[-1] != 0)),
+  lambda_1se   = sapply(cv_fits, function(f) f$lambda.1se),
+  n_terms_1se  = sapply(cv_fits, function(f) sum(coef(f, s = "lambda.1se")[-1] != 0))
+)
+print(cmp)   # compare RMSE_log_min with RMSE_log of the lm models (model C was ~0.22)
+
+# 3. Look at which terms survive for the lasso (alpha = 1)
+pick <- which(alphas == 1)
+fit  <- cv_fits[[pick]]
+
+show_coefs <- function(s) {
+  b <- as.matrix(coef(fit, s = s))
+  tibble(term = rownames(b), coef = b[, 1]) %>%
+    filter(coef != 0, term != "(Intercept)") %>%
+    arrange(desc(abs(coef)))
+}
+cat("\nTerms kept at lambda.min:\n");  print(show_coefs("lambda.min"), n = Inf)
+cat("\nTerms kept at lambda.1se (sparser):\n"); print(show_coefs("lambda.1se"), n = Inf)
+
+# 4. Post-lasso refit: plain lm on the selected terms (descriptive only; p-values after
+#    selection are not valid, and its LOOCV would be optimistic).
+sel <- show_coefs("lambda.1se")$term
+Xdf <- as.data.frame(X[, sel, drop = FALSE]); names(Xdf) <- make.names(sel)
+refit <- lm(y ~ ., data = Xdf)
+print(summary(refit))
+```
+```{r}
+b <- coef(refit)
+
+cat("log_skew = ")
+cat(sprintf("%.6f", b[1]))
+
+for (i in 2:length(b)) {
+  cat(sprintf(" %+.6f * %s", b[i], names(b)[i]))
+}
+cat("\n")
+```
 
 
