@@ -153,6 +153,10 @@ data <- train %>%
     Fr = factor(Fr)
   )
 
+train |> 
+  ggplot(aes(x = St, y = m1, color = as.factor(Re), shape = as.factor(Fr))) +
+  geom_point()
+
 formulas <- list(
   no_logs  = m1 ~ St + Re + Fr,
   log_mean = log(m1) ~ St + Re + Fr,
@@ -359,4 +363,479 @@ coef(final_mean)
 alias(final_mean)
 ```
 
-The interaction for `Re = 398` and `Fr = 0.3` was not estimable because no training simulations were available at that combination.
+The interaction for `Re = 398` and `Fr = 0.3` was not estimatable because no training simulations were available at that combination.
+
+## Numerical Mean Model
+
+```{r}
+data_numeric <- train %>%
+  mutate(
+    Re = as.numeric(as.character(Re)),
+    Fr = as.numeric(as.character(Fr))
+  )
+
+summary(data_numeric)
+```
+
+```{r}
+# Mean volume
+ggplot(data_numeric, aes(x = m1)) +
+  geom_histogram(bins = 20, fill = "steelblue", color = "white") +
+  labs(x = "Mean cluster volume", y = "Count") +
+  theme_minimal()
+
+# St
+ggplot(data_numeric, aes(x = St)) +
+  geom_histogram(bins = 20, fill = "steelblue", color = "white") +
+  labs(x = "St", y = "Count") +
+  theme_minimal()
+
+# Re
+ggplot(data_numeric, aes(x = factor(Re))) +
+  geom_bar(fill = "steelblue") +
+  labs(x = "Re", y = "Count") +
+  theme_minimal()
+
+# Fr, including infinity
+ggplot(data_numeric, aes(x = factor(Fr))) +
+  geom_bar(fill = "steelblue") +
+  labs(x = "Fr", y = "Count") +
+  theme_minimal()
+```
+
+```{r}
+finite_data <- data_numeric %>%
+  filter(is.finite(Fr)) %>%
+  select(m1, St, Re, Fr)
+
+pairs(
+  finite_data,
+  labels = c("Mean volume", "St", "Re", "Fr"),
+  main = "Pairwise relationships: finite Fr observations only",
+  pch = 19,
+  col = "steelblue"
+)
+```
+
+```{r}
+# Mean versus St
+ggplot(data_numeric, aes(x = St, y = m1)) +
+  geom_point(alpha = 0.7) +
+  labs(x = "St", y = "Mean cluster volume") +
+  theme_minimal()
+
+# Mean versus Re
+ggplot(data_numeric, aes(x = Re, y = m1)) +
+  geom_point(alpha = 0.7) +
+  scale_x_continuous(breaks = sort(unique(data_numeric$Re))) +
+  labs(x = "Re", y = "Mean cluster volume") +
+  theme_minimal()
+
+# Mean across Fr settings, including infinity
+ggplot(data_numeric, aes(x = factor(Fr), y = m1)) +
+  geom_point(
+    position = position_jitter(width = 0.08, height = 0, seed = 325),
+    alpha = 0.7
+  ) +
+  labs(x = "Fr setting", y = "Mean cluster volume") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(
+  data_numeric,
+  aes(x = St, y = m1, color = factor(Re))
+) +
+  geom_point(size = 2) +
+  facet_wrap(~ Fr) +
+  labs(
+    x = "St",
+    y = "Mean cluster volume",
+    color = "Re"
+  ) +
+  theme_minimal()
+
+ggplot(
+  data_numeric,
+  aes(x = St, y = m1, color = factor(Fr))
+) +
+  geom_point(size = 2) +
+  facet_wrap(~ Re) +
+  labs(
+    x = "St",
+    y = "Mean cluster volume",
+    color = "Fr"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+data_numeric <- data_numeric %>%
+  mutate(
+    m1 = R_moment_1,
+    log_mean = log(m1),
+    log_St = log(St),
+    logistic_Fr = plogis(Fr),
+    log_Re = log(Re)
+  )
+
+# Check the transformed variables
+summary(
+  data_numeric %>%
+    select(log_mean, log_St, logistic_Fr, Re, log_Re)
+)
+```
+
+```{r}
+data_numeric %>%
+  select(log_mean, log_St, logistic_Fr, Re, log_Re) %>%
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(
+    bins = 15,
+    fill = "steelblue",
+    color = "white"
+  ) +
+  facet_wrap(~ variable, scales = "free") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(
+  data_numeric,
+  aes(
+    x = log_St,
+    y = log_mean,
+    color = factor(Re),
+    group = factor(Re)
+  )
+) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
+  facet_wrap(~ Fr) +
+  labs(
+    x = "Log St",
+    y = "Log mean cluster volume",
+    color = "Re"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+data_numeric %>%
+  select(log_mean, St, Fr, Re, log_Re) %>%
+  pivot_longer(
+    cols = c(Re, log_Re),
+    names_to = "Re_scale",
+    values_to = "Re_value"
+  ) %>%
+  ggplot(
+    aes(
+      x = Re_value,
+      y = log_mean,
+      color = factor(St),
+      group = factor(St)
+    )
+  ) +
+  geom_point() +
+  geom_line() +
+  facet_grid(Fr ~ Re_scale, scales = "free_x") +
+  labs(
+    x = "Re or log Re",
+    y = "Log mean cluster volume",
+    color = "St"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(
+  data_numeric,
+  aes(
+    x = logistic_Fr,
+    y = log_mean,
+    color = factor(St),
+    group = factor(St)
+  )
+) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~ Re) +
+  labs(
+    x = "plogis(Fr)",
+    y = "Log mean cluster volume",
+    color = "St"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+baseline_numeric <- lm(
+  log_mean ~ log_St + log_Re + logistic_Fr,
+  data = data_numeric
+)
+
+summary(baseline_numeric)
+
+par(mfrow = c(2, 2))
+plot(baseline_numeric)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Use the original positive outcome for Box–Cox
+bc_baseline <- lm(
+  m1 ~ log_St + log_Re + logistic_Fr,
+  data = data_numeric
+)
+
+bc <- MASS::boxcox(
+  bc_baseline,
+  lambda = seq(-2, 2, by = 0.1)
+)
+
+best_lambda <- bc$x[which.max(bc$y)]
+best_lambda
+```
+
+Although the Box–Cox confidence interval excluded zero, the estimated λ of approximately −0.0202 was close to zero. We therefore retained the log transformation for its simplicity and interpretable coefficients, while recognizing that Box–Cox provided a slightly better fit under the baseline model.
+
+```{r}
+numeric_formulas <- list(
+  additive = log_mean ~ log_St + log_Re + logistic_Fr,
+  
+  Re_Fr = log_mean ~ log_St + log_Re * logistic_Fr,
+  
+  St_Fr = log_mean ~ log_Re + log_St * logistic_Fr,
+  
+  St_Re = log_mean ~ logistic_Fr + log_St * log_Re,
+  
+  pairwise = log_mean ~ (log_St + log_Re + logistic_Fr)^2,
+  
+  threeway = log_mean ~ log_St * log_Re * logistic_Fr
+)
+```
+
+```{r}
+numeric_results <- list()
+numeric_fits <- list()
+
+for (model_name in names(numeric_formulas)) {
+  
+  predictions <- rep(NA_real_, nrow(data_numeric))
+  
+  for (i in seq_len(nrow(data_numeric))) {
+    
+    fit <- lm(
+      numeric_formulas[[model_name]],
+      data = data_numeric[-i, ]
+    )
+    
+    pred_log <- predict(
+      fit,
+      newdata = data_numeric[i, , drop = FALSE]
+    )
+    
+    # Back-transform using this training fold's residuals
+    correction <- mean(exp(residuals(fit)))
+    predictions[i] <- exp(pred_log) * correction
+  }
+  
+  numeric_results[[model_name]] <- tibble(
+    model = model_name,
+    RMSE = sqrt(mean((data_numeric$m1 - predictions)^2)),
+    MAE = mean(abs(data_numeric$m1 - predictions))
+  )
+  
+  numeric_fits[[model_name]] <- lm(
+    numeric_formulas[[model_name]],
+    data = data_numeric
+  )
+}
+
+numeric_comparison <- bind_rows(numeric_results) %>%
+  arrange(RMSE)
+
+numeric_comparison
+```
+
+```{r}
+library(glmnet)
+
+# Candidate terms for lasso
+lasso_formula <- ~ log_St * log_Re * logistic_Fr +
+  I(log_St^2) + I(log_Re^2) + I(logistic_Fr^2)
+
+# Same predictor columns for every fold
+x <- model.matrix(
+  lasso_formula,
+  data = data_numeric
+)[, -1, drop = FALSE]
+
+y <- data_numeric$log_mean
+
+lasso_predictions <- numeric(nrow(data_numeric))
+
+# Choose one penalty rule before running
+penalty_rule <- "lambda.1se"  # Or "lambda.min"
+
+set.seed(2026)
+
+# Outer LOOCV: hold out one observation
+for (i in seq_len(nrow(data_numeric))) {
+  
+  x_train <- x[-i, , drop = FALSE]
+  y_train <- y[-i]
+  x_test  <- x[i, , drop = FALSE]
+  
+  # Inner 10-fold CV: choose the lasso penalty
+  fold_id <- sample(
+    rep(1:10, length.out = length(y_train))
+  )
+  
+  fit <- cv.glmnet(
+    x = x_train,
+    y = y_train,
+    alpha = 1,
+    foldid = fold_id,
+    standardize = TRUE
+  )
+  
+  # Predict the held-out observation on the log scale
+  pred_log <- as.numeric(
+    predict(fit, newx = x_test, s = penalty_rule)
+  )
+  
+  # Training residuals for the back-transformation correction
+  fitted_log <- as.numeric(
+    predict(fit, newx = x_train, s = penalty_rule)
+  )
+  
+  correction <- mean(exp(y_train - fitted_log))
+  
+  lasso_predictions[i] <- exp(pred_log) * correction
+}
+
+# Original-scale errors, matching your ordinary regressions
+lasso_results <- tibble(
+  model = paste0("lasso_", penalty_rule),
+  RMSE = sqrt(mean((data_numeric$m1 - lasso_predictions)^2)),
+  MAE = mean(abs(data_numeric$m1 - lasso_predictions))
+)
+
+# Compare with your existing models
+all_comparison <- bind_rows(
+  numeric_comparison,
+  lasso_results
+) %>%
+  arrange(RMSE)
+
+all_comparison
+```
+
+```{r}
+library(glmnet)
+
+# Candidate predictors: main effects, two-way interactions,and quadratic terms to allow curvature
+x <- model.matrix(
+  ~ log_St * log_Re * logistic_Fr +
+    I(log_St^2) + I(log_Re^2) + I(logistic_Fr^2),
+  data = data_numeric
+)[, -1]
+
+y <- data_numeric$log_mean
+
+# Choose the penalty using 10-fold cross-validation
+set.seed(2026)
+
+lasso_cv <- cv.glmnet(
+  x = x,
+  y = y,
+  alpha = 1,             # Lasso
+  nfolds = 10,
+  standardize = TRUE
+)
+
+plot(lasso_cv)
+
+# Coefficients at the penalty with lowest CV error
+coef(lasso_cv, s = "lambda.min")
+
+# More strongly penalized, usually simpler alternative
+coef(lasso_cv, s = "lambda.1se")
+```
+
+```{r}
+candidate_mean <- numeric_fits[["Re_Fr"]]
+
+summary(candidate_mean)
+
+par(mfrow = c(2, 2))
+plot(candidate_mean)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Rank observations by influence
+influence_table <- tibble(
+  row = rownames(model.frame(candidate_mean)),
+  cooks_distance = cooks.distance(candidate_mean),
+  leverage = hatvalues(candidate_mean),
+  studentized_residual = rstudent(candidate_mean)
+) %>%
+  arrange(desc(cooks_distance))
+
+head(influence_table, 10)
+
+# Screening threshold—not an automatic deletion rule
+4 / nobs(candidate_mean)
+```
+
+```{r}
+# Observations above the screening threshold
+flagged_rows <- influence_table %>%
+  filter(cooks_distance > 4 / nobs(candidate_mean)) %>%
+  pull(row)
+
+# Inspect their original values
+data_numeric[
+  match(flagged_rows, rownames(data_numeric)),
+  c("St", "Re", "Fr", "m1")
+]
+
+# Refit the same model, omitting one flagged observation at a time
+sensitivity_fits <- setNames(
+  lapply(flagged_rows, function(id) {
+    reduced_data <- data_numeric[
+      rownames(data_numeric) != id, ,
+      drop = FALSE
+    ]
+    
+    lm(formula(candidate_mean), data = reduced_data)
+  }),
+  paste0("without_", flagged_rows)
+)
+
+# Coefficient changes measured in full-model standard errors
+full_coef <- coef(candidate_mean)
+full_se <- sqrt(diag(vcov(candidate_mean)))
+
+changes_in_se <- sapply(sensitivity_fits, function(fit) {
+  (coef(fit)[names(full_coef)] - full_coef) / full_se
+})
+
+round(changes_in_se, 2)
+```
+
+Nine observations exceeded the Cook’s distance screening threshold. Removing each individually changed all coefficients by less than 0.62 full-model standard errors, suggesting that the coefficient estimates were reasonably robust to individual influential observations.
+
+```{r}
+summary(candidate_mean)
+confint(candidate_mean)
+```
+
+Mean cluster volume increased with St, with doubling St associated with approximately 14.6% higher fitted volume, holding Re and Fr fixed. Higher Re was associated with lower volume across the observed gravity settings. The positive Re–Fr interaction indicated that this relationship became less negative as Fr increased.

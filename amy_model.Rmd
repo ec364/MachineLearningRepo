@@ -510,6 +510,19 @@ m7_2 <- lm(log(skewness) ~ Re * Fr + log(St), data = data)
 ```
 
 ```{r}
+loo_rmse <- function(m) sqrt(mean((resid(m) / (1 - hatvalues(m)))^2))
+loo_rmse(m1)
+loo_rmse(m2_2)
+loo_rmse(m3_2)
+loo_rmse(m4_2)
+loo_rmse(m5_2)
+loo_rmse(m6_2)
+loo_rmse(m7_2)
+```
+
+
+
+```{r}
 models <- list(
   m1 = m1, m2_2 = m2_2, m3_2 = m3_2, m4_2 = m4_2,
   m5_2 = m5_2, m6_2 = m6_2, m7_2 = m7_2
@@ -555,7 +568,7 @@ run_loocv <- function(model, dat) {
     pred <- as.numeric(predict(fit, newdata = test))
 
     if (log_response) {
-      # Smearing correction for back-transforming log predictions
+       #Smearing correction for back-transforming log predictions
       smear <- mean(exp(residuals(fit)), na.rm = TRUE)
       pred <- exp(pred) * smear
     }
@@ -689,7 +702,18 @@ model_comparison <- do.call(
   })
 )
 
+# Sort by adjusted R-squared, highest first
+model_comparison <- model_comparison[
+  order(model_comparison$Adjusted_R_squared, decreasing = TRUE),
+]
+
 print(model_comparison)
 ```
 
-based on everything, we could either do m4_2 or m7_2. RMSE/MAE/BIC are lower for m7_2 but AIC/adj R^2 are better for m7_2. 
+based on everything, we could either do m4_2 or m7_2. RMSE/MAE/BIC are lower for m7_2 but AIC/adj R^2 are better for m4_2. 
+
+```{r}
+summary(m7_2)
+```
+
+## New Modeling Work based on Feedback
